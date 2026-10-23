@@ -1,0 +1,38 @@
+{
+  "name": "monetr",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "icons": "node scripts/make-icons.mjs",
+    "serve": "node .tooling/node/bin/node scripts/serve-dist.mjs",
+    "build:static": "npm run build && node -e \"require('fs').writeFileSync('dist/README.txt','Open index.html in a modern browser, or serve this folder with any static server.\\\\n\\\\nFor Android APK: use PWA Builder (https://www.pwabuilder.com/) pointing to your hosted URL, or use PWABuilder CLI.\\\\n\\\\nNo backend/server required. All data stays in your browser.')\""
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0",
+    "dexie": "^4.0.8",
+    "lucide-react": "^0.451.0",
+    "pako": "^3.0.2",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.12.7"
+  },
+  "devDependencies": {
+    "@types/pako": "^2.0.4",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.9"
+  }
+}

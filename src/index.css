@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 250 250 250;
+  --surface: 255 255 255;
+  --surface-2: 246 247 249;
+  --line: 226 228 234;
+  --ink: 9 9 11;
+  --muted: 113 113 122;
+  --accent: 59 130 246;
+  --good: 34 197 94;
+  --bad: 239 68 68;
+  --warn: 245 158 11;
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: 9 9 11;
+  --surface: 24 24 27;
+  --surface-2: 39 39 42;
+  --line: 39 39 42;
+  --ink: 250 250 250;
+  --muted: 161 161 170;
+  --accent: 59 130 246;
+  --good: 34 197 94;
+  --bad: 239 68 68;
+  --warn: 245 158 11;
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: 250 250 250;
+  --surface: 255 255 255;
+  --surface-2: 246 247 249;
+  --line: 226 228 234;
+  --ink: 9 9 11;
+  --muted: 113 113 122;
+  --accent: 59 130 246;
+  --good: 34 197 94;
+  --bad: 239 68 68;
+  --warn: 245 158 11;
+  color-scheme: light;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-ink antialiased;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  overscroll-behavior-y: none;
+}
+
+::selection {
+  background: rgb(var(--accent) / 0.35);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line/80 bg-surface shadow-card;
+  }
+  .card-pad {
+    @apply p-4 sm:p-5;
+  }
+  .hairline {
+    @apply border-line/70;
+  }
+
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-xl px-3.5 py-2.5 text-sm font-semibold transition
+      active:scale-[0.985] disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-accent text-white shadow-[0_10px_30px_-12px_rgb(var(--accent)/0.9)] hover:brightness-110;
+  }
+  .btn-soft {
+    @apply bg-accent/10 text-accent hover:bg-accent/15;
+  }
+  .btn-ghost {
+    @apply border border-line/80 bg-surface text-ink hover:bg-surface2;
+  }
+  .btn-danger {
+    @apply bg-bad/10 text-bad hover:bg-bad/15;
+  }
+  .btn-sm {
+    @apply rounded-lg px-2.5 py-1.5 text-xs;
+  }
+  .btn-lg {
+    @apply rounded-2xl px-5 py-3.5 text-base;
+  }
+  .btn-icon {
+    @apply h-10 w-10 shrink-0 rounded-xl p-0;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-line bg-bg/60 px-3.5 py-2.5 text-sm text-ink placeholder:text-muted/70
+      focus:border-accent/70 focus:outline-none focus:ring-2 focus:ring-accent/20;
+  }
+  .textarea {
+    @apply input min-h-[84px] resize-y;
+  }
+  .label {
+    @apply mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-muted;
+  }
+  .select {
+    @apply input appearance-none bg-[length:16px] bg-[right_0.75rem_center] bg-no-repeat pr-9;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238d97ab' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-surface px-3 py-1.5 text-xs font-medium text-muted transition;
+  }
+  .chip-active {
+    @apply border-accent/40 bg-accent/10 text-accent;
+  }
+
+  .nav-item {
+    @apply flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium text-muted transition;
+  }
+  .nav-item-active {
+    @apply text-accent;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide;
+  }
+
+  .divider {
+    @apply h-px w-full bg-line/70;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded-lg bg-surface2;
+  }
+
+  .md {
+    @apply space-y-2 text-sm leading-relaxed text-ink/90;
+  }
+  .md h1,
+  .md h2,
+  .md h3 {
+    @apply mt-3 text-sm font-bold text-ink;
+  }
+  .md ul {
+    @apply list-disc space-y-1 pl-5;
+  }
+  .md ol {
+    @apply list-decimal space-y-1 pl-5;
+  }
+  .md strong {
+    @apply font-semibold text-ink;
+  }
+  .md p {
+    @apply text-ink/85;
+  }
+  .md code {
+    @apply rounded bg-surface2 px-1 py-0.5 font-mono text-[12px];
+  }
+}
