@@ -9,7 +9,7 @@ import { testProfile } from '../ai/client'
 import { saveProfile } from '../db/db'
 import type { ProviderId, ThemeMode } from '../types'
 
-const ACCENTS = ['#6366F1', '#8B5CF6', '#22D3EE', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#14B8A6']
+const ACCENTS = ['#18181B', '#000000', '#52525B', '#FFFFFF']
 
 export function Onboarding() {
   const { settings, saveSettings, loadSample, notify } = useApp()
@@ -97,7 +97,7 @@ export function Onboarding() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <BrandMark size={34} />
-            <span className="text-sm font-bold text-ink">Spendwise</span>
+            <span className="text-sm font-bold text-ink">Monetr</span>
           </div>
           <button
             type="button"
@@ -322,7 +322,7 @@ export function Onboarding() {
             </div>
 
             <Button size="lg" className="mt-6 w-full" onClick={() => finish(false)} loading={saving}>
-              Start using Spendwise
+              Start using Monetr
             </Button>
             <button
               type="button"

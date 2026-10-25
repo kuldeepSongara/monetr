@@ -334,7 +334,7 @@ export function Bills() {
           <EmptyState
             icon={<CalendarPlus className="h-6 w-6" />}
             title={filter === 'all' ? 'No bills yet' : 'Nothing in this filter'}
-            body="Add a recurring bill once — Spendwise learns the rhythm from your payments and predicts the next due date."
+            body="Add a recurring bill once — Monetr learns the rhythm from your payments and predicts the next due date."
             action={
               <Button size="sm" onClick={startAdd}>
                 <Plus className="h-3.5 w-3.5" /> Add your first bill

@@ -1,4 +1,4 @@
-# Spendwise
+# Monetr
 
 A local-first personal spending tracker with bill reminders, budgets, charts and optional AI insights. Built as a mobile-first PWA, so it runs as an Android home-screen app and in a wide desktop layout on a MacBook.
 
@@ -67,7 +67,7 @@ Use the same URL in Safari/Chrome for the desktop layout: fixed sidebar, wider c
 ## AI keys
 
 1. Get a key from your provider. For Gemini, use [Google AI Studio](https://aistudio.google.com/apikey); the default model is `gemini-2.5-flash`.
-2. In Spendwise: **Settings → AI profiles → Add**.
+2. In Monetr: **Settings → AI profiles → Add**.
 3. Pick the provider, paste the key, adjust the model if you like, then **Test connection** and **Save profile**.
 4. Mark one profile as **Prefer**. Profiles are tried in priority order when failover is on.
 
@@ -76,7 +76,7 @@ Notes:
 - Keys are stored in IndexedDB in this browser only and are sent directly to the provider. There is no proxy server.
 - Browser CORS rules apply. Gemini, OpenAI and Anthropic (with the direct-browser header) work from the browser; some providers may require a custom base URL or proxy.
 - Ollama and “Custom” default to `localhost`. On a phone, `localhost` is the phone itself — use your computer’s LAN IP instead (e.g. `http://192.168.1.20:11434/v1`).
-- The **preferred** profile is the one used first. If it errors, Spendwise records the error, cools that profile down for 45 seconds, and tries the next ready profile. With “Keep the working profile preferred” on, the profile that answered becomes the new preferred one, and Settings shows the last failover.
+- The **preferred** profile is the one used first. If it errors, Monetr records the error, cools that profile down for 45 seconds, and tries the next ready profile. With “Keep the working profile preferred” on, the profile that answered becomes the new preferred one, and Settings shows the last failover.
 - Receipt scanning needs a vision-capable model (Gemini, GPT-4o/4.1, Claude, or a compatible endpoint).
 
 ---

@@ -3,27 +3,27 @@
 @tailwind utilities;
 
 :root {
-  --bg: 250 250 250;
+  --bg: 255 255 255;
   --surface: 255 255 255;
-  --surface-2: 246 247 249;
-  --line: 226 228 234;
+  --surface-2: 250 250 250;
+  --line: 228 228 231;
   --ink: 9 9 11;
   --muted: 113 113 122;
-  --accent: 59 130 246;
-  --good: 34 197 94;
-  --bad: 239 68 68;
-  --warn: 245 158 11;
+  --accent: 24 24 27;
+  --good: 22 163 74;
+  --bad: 220 38 38;
+  --warn: 217 119 6;
   color-scheme: light;
 }
 
 :root[data-theme='dark'] {
   --bg: 9 9 11;
-  --surface: 24 24 27;
-  --surface-2: 39 39 42;
+  --surface: 9 9 11;
+  --surface-2: 24 24 27;
   --line: 39 39 42;
   --ink: 250 250 250;
   --muted: 161 161 170;
-  --accent: 59 130 246;
+  --accent: 250 250 250;
   --good: 34 197 94;
   --bad: 239 68 68;
   --warn: 245 158 11;
@@ -31,16 +31,16 @@
 }
 
 :root[data-theme='light'] {
-  --bg: 250 250 250;
+  --bg: 255 255 255;
   --surface: 255 255 255;
-  --surface-2: 246 247 249;
-  --line: 226 228 234;
+  --surface-2: 250 250 250;
+  --line: 228 228 231;
   --ink: 9 9 11;
   --muted: 113 113 122;
-  --accent: 59 130 246;
-  --good: 34 197 94;
-  --bad: 239 68 68;
-  --warn: 245 158 11;
+  --accent: 24 24 27;
+  --good: 22 163 74;
+  --bad: 220 38 38;
+  --warn: 217 119 6;
   color-scheme: light;
 }
 
@@ -79,7 +79,7 @@ body {
 
 @layer components {
   .card {
-    @apply rounded-2xl border border-line/80 bg-surface shadow-card;
+    @apply rounded-lg border border-line bg-surface shadow-sm;
   }
   .card-pad {
     @apply p-4 sm:p-5;
@@ -89,34 +89,34 @@ body {
   }
 
   .btn {
-    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-xl px-3.5 py-2.5 text-sm font-semibold transition
-      active:scale-[0.985] disabled:pointer-events-none disabled:opacity-50;
+    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition
+      active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50;
   }
   .btn-primary {
-    @apply bg-accent text-white shadow-[0_10px_30px_-12px_rgb(var(--accent)/0.9)] hover:brightness-110;
+    @apply bg-ink text-bg hover:opacity-90;
   }
   .btn-soft {
-    @apply bg-accent/10 text-accent hover:bg-accent/15;
+    @apply bg-surface2 text-ink hover:bg-surface2/80;
   }
   .btn-ghost {
-    @apply border border-line/80 bg-surface text-ink hover:bg-surface2;
+    @apply border border-line bg-surface text-ink hover:bg-surface2;
   }
   .btn-danger {
     @apply bg-bad/10 text-bad hover:bg-bad/15;
   }
   .btn-sm {
-    @apply rounded-lg px-2.5 py-1.5 text-xs;
+    @apply rounded-md px-2.5 py-1.5 text-xs;
   }
   .btn-lg {
-    @apply rounded-2xl px-5 py-3.5 text-base;
+    @apply rounded-md px-4 py-2.5 text-sm;
   }
   .btn-icon {
-    @apply h-10 w-10 shrink-0 rounded-xl p-0;
+    @apply h-9 w-9 shrink-0 rounded-md p-0;
   }
 
   .input {
-    @apply w-full rounded-xl border border-line bg-bg/60 px-3.5 py-2.5 text-sm text-ink placeholder:text-muted/70
-      focus:border-accent/70 focus:outline-none focus:ring-2 focus:ring-accent/20;
+    @apply w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-muted/70
+      focus:border-ink/40 focus:outline-none focus:ring-1 focus:ring-ink/10;
   }
   .textarea {
     @apply input min-h-[84px] resize-y;
@@ -137,7 +137,7 @@ body {
   }
 
   .nav-item {
-    @apply flex flex-col items-center justify-center gap-1 rounded-xl py-1.5 text-[10px] font-medium text-muted transition;
+    @apply flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-[10px] font-medium text-muted transition;
   }
   .nav-item-active {
     @apply text-accent;

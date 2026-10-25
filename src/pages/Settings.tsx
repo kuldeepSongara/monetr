@@ -52,7 +52,7 @@ import { formatBytes, uid } from '../lib/utils'
 import { formatDate, relativeTime } from '../lib/dates'
 import { Badge, Button, Card, Confirm, Field, Input, Modal, SectionTitle, Select, Segmented, Textarea, Toggle, cn } from '../components/ui'
 
-const ACCENTS = ['#6366F1', '#8B5CF6', '#22D3EE', '#22C55E', '#F59E0B', '#EF4444', '#EC4899', '#14B8A6']
+const ACCENTS = ['#18181B', '#000000', '#52525B', '#FFFFFF']
 
 const WIDGETS: { id: WidgetId; label: string; hint: string }[] = [
   { id: 'safe', label: 'Safe to spend', hint: 'The headline number for this cycle' },
@@ -386,7 +386,7 @@ export function Settings() {
       }
     }
     await saveSettings({ notifications: next })
-    if (next) notify('Bill alerts will appear while Spendwise is open.', 'success')
+    if (next) notify('Bill alerts will appear while Monetr is open.', 'success')
   }
 
   /* --------------------------------- security -------------------------------- */
@@ -546,7 +546,7 @@ export function Settings() {
     },
     'remove-pin': {
       title: 'Remove the PIN lock?',
-      body: 'Spendwise will open without asking for a PIN. Your transactions and settings stay exactly as they are.',
+      body: 'Monetr will open without asking for a PIN. Your transactions and settings stay exactly as they are.',
       label: 'Remove PIN',
       tone: 'danger',
     },
@@ -976,13 +976,13 @@ export function Settings() {
             checked={settings.notifications}
             onChange={toggleNotifications}
             label="Browser notifications for due bills"
-            hint="These only fire while Spendwise is open — there is no server to push in the background."
+            hint="These only fire while Monetr is open — there is no server to push in the background."
           />
           <div className="rounded-xl border border-line/70 bg-surface2/40 p-3">
             <p className="text-[11px] font-semibold text-ink">Reliable reminders on your phone</p>
             <p className="mt-1 text-[10px] leading-relaxed text-muted">
               Export your bills as an .ics calendar file. Import it into Google Calendar or Apple Calendar and the
-              reminders arrive even when Spendwise is closed.
+              reminders arrive even when Monetr is closed.
             </p>
             <Button
               size="sm"
@@ -1010,7 +1010,7 @@ export function Settings() {
               else setConfirm({ kind: 'remove-pin' })
             }}
             label="PIN lock"
-            hint="Asks for a PIN when Spendwise opens or after a minute in the background."
+            hint="Asks for a PIN when Monetr opens or after a minute in the background."
           />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="ghost" onClick={openPin}>
@@ -1093,7 +1093,7 @@ export function Settings() {
 
       {/* -------------------------------- install ----------------------------- */}
       <Card>
-        <SectionTitle title="Install Spendwise" sub="A real app icon, still local-first" />
+        <SectionTitle title="Install Monetr" sub="A real app icon, still local-first" />
         <div className="flex items-start gap-2.5">
           <Smartphone className="mt-0.5 h-5 w-5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
@@ -1120,7 +1120,7 @@ export function Settings() {
         <div className="flex items-start gap-2.5">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
           <div className="min-w-0 flex-1 text-[10px] leading-relaxed text-muted">
-            <p className="font-semibold text-ink">Spendwise v1.0.0</p>
+            <p className="font-semibold text-ink">Monetr v1.0.0</p>
             <p className="mt-0.5">
               Local-first spending tracker. Data lives in IndexedDB on this device; there is no account, server or cloud
               sync. Backups are plain JSON files you control.

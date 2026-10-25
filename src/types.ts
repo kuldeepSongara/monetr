@@ -231,8 +231,123 @@ export interface AIAttempt {
   ms: number
 }
 
+export interface CurrencyProfile {
+  id: string
+  name: string
+  code: string
+  country?: string
+  emoji?: string
+  isBase: boolean
+  isDefault: boolean
+  fxToBase: number
+  updatedAt: string
+  createdAt: string
+}
+
+export type InvestmentType = 'stock' | 'etf' | 'mutualfund' | 'crypto' | 'fd' | 'bond' | 'other'
+
+export interface Investment {
+  id: string
+  profileId: string
+  currency: string
+  type: InvestmentType
+  symbol?: string
+  name: string
+  account?: string
+  qty: number
+  avgCost: number
+  fees?: number
+  notes?: string
+  openedAt?: ISODate
+  archived?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type InvestmentTxType = 'buy' | 'sell' | 'dividend' | 'fee' | 'interest' | 'transfer'
+
+export interface InvestmentTx {
+  id: string
+  investmentId: string
+  profileId: string
+  type: InvestmentTxType
+  date: ISODate
+  qty?: number
+  price?: number
+  amount: number
+  currency: string
+  fxRate: number
+  baseAmount: number
+  fees?: number
+  note?: string
+  createdAt: string
+}
+
+export interface Txn {
+  id: string
+  date: ISODate
+  /** Amount in minor units of `currency`. */
+  amount: number
+  currency: string
+  /** Units of base currency per 1 unit of `currency`. */
+  fxRate: number
+  /** Amount in minor units of the base currency at entry time. */
+  baseAmount: number
+  profileId?: string
+  type: TxnType
+  categoryId: string
+  merchant: string
+  note?: string
+  tags?: string[]
+  source: 'manual' | 'ai' | 'receipt' | 'import' | 'bill'
+  categorySource: CategorySource
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Bill {
+  id: string
+  name: string
+  merchant?: string
+  categoryId: string
+  amount: number
+  currency: string
+  fxRate: number
+  baseAmount: number
+  profileId?: string
+  frequency: BillFrequency
+  /** Only for frequency = custom. */
+  intervalDays?: number
+  /** Preferred day of month for monthly/quarterly/yearly bills. */
+  dueDay?: number
+  /** First known payment / start date. */
+  anchorDate: ISODate
+  autoPay: boolean
+  leadDays: number
+  active: boolean
+  notes?: string
+  snoozedUntil?: ISODate
+  archived?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BillPayment {
+  id: string
+  billId: string
+  paidDate: ISODate
+  amount: number
+  currency: string
+  fxRate: number
+  baseAmount: number
+  profileId?: string
+  txnId?: string
+  note?: string
+  createdAt: string
+}
+
 export interface BackupFile {
-  app: 'spendwise'
+  app: 'monetr'
   schemaVersion: number
   exportedAt: string
   data: {
@@ -244,5 +359,8 @@ export interface BackupFile {
     billPayments: BillPayment[]
     budgets: Budget[]
     rules: Rule[]
+    currencyProfiles?: CurrencyProfile[]
+    investments?: Investment[]
+    investmentTxs?: InvestmentTx[]
   }
 }

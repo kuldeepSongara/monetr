@@ -71,7 +71,7 @@ function insideCapsule(x, y, cx, top, bottom, radius) {
   return dx * dx + dy * dy <= radius * radius + 1e-6
 }
 
-/** Draw the Spendwise mark at `size` px. `maskable` fills the square. */
+/** Draw the Monetr mark at `size` px. `maskable` fills the square. */
 function draw(size, { maskable = false } = {}) {
   const S = size
   const inner = maskable ? S * 0.78 : S

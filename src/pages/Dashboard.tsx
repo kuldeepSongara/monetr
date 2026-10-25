@@ -94,13 +94,13 @@ export function Dashboard() {
     switch (id) {
       case 'safe':
         return (
-          <div className={span.safe} key={id}>
-            <Card className="relative overflow-hidden border-accent/25 bg-gradient-to-br from-accent/12 via-surface to-surface">
+          <div className={cn(span.safe, 'flex')} key={id}>
+            <Card className="relative flex w-full flex-col overflow-hidden border-line">
               <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-accent/20 blur-3xl" />
-              <div className="relative">
-                <div className="flex items-start justify-between gap-3">
+              <div className="relative flex flex-1 flex-col">
+                <div className="flex flex-1 items-start justify-between gap-3">
                   <div>
-                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
                       <Wallet className="h-3.5 w-3.5" /> Safe to spend today
                     </p>
                     {safe.basis === 'none' ? (
@@ -160,8 +160,8 @@ export function Dashboard() {
       case 'alerts':
         if (!alertBills.length && !anomalies.length) return null
         return (
-          <div className={span.alerts} key={id}>
-            <Card className="border-warn/25 bg-warn/[0.05]">
+          <div className={cn(span.alerts, 'flex')} key={id}>
+            <Card className="flex w-full flex-col border-line bg-surface2/30">
               <div className="mb-2 flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-warn" />
                 <p className="text-xs font-semibold text-ink">
@@ -198,8 +198,8 @@ export function Dashboard() {
 
       case 'trend':
         return (
-          <div className={span.trend} key={id}>
-            <Card>
+          <div className={cn(span.trend, 'flex')} key={id}>
+            <Card className="flex w-full flex-col">
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div>
                   <p className="text-[13px] font-semibold text-ink">Spending trend</p>
@@ -230,8 +230,8 @@ export function Dashboard() {
 
       case 'categories':
         return (
-          <div className={span.categories} key={id}>
-            <Card>
+          <div className={cn(span.categories, 'flex')} key={id}>
+            <Card className="flex w-full flex-col">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-[13px] font-semibold text-ink">Where it went</p>
                 <Badge tone="neutral">{formatDate(range.start, 'short')}–{formatDate(range.end, 'short')}</Badge>
@@ -251,12 +251,12 @@ export function Dashboard() {
 
       case 'budgets':
         return (
-          <div className={span.budgets} key={id}>
-            <Card>
+          <div className={cn(span.budgets, 'flex')} key={id}>
+            <Card className="flex w-full flex-col">
               <SectionTitle
                 title="Budgets"
                 action={
-                  <Link to="/budgets" className="flex items-center gap-0.5 text-[11px] font-semibold text-accent">
+                  <Link to="/budgets" className="flex items-center gap-0.5 text-[11px] font-semibold text-ink">
                     Manage <ChevronRight className="h-3 w-3" />
                   </Link>
                 }
@@ -299,12 +299,12 @@ export function Dashboard() {
 
       case 'bills':
         return (
-          <div className={span.bills} key={id}>
-            <Card>
+          <div className={cn(span.bills, 'flex')} key={id}>
+            <Card className="flex w-full flex-col">
               <SectionTitle
                 title="Upcoming bills"
                 action={
-                  <Link to="/bills" className="flex items-center gap-0.5 text-[11px] font-semibold text-accent">
+                  <Link to="/bills" className="flex items-center gap-0.5 text-[11px] font-semibold text-ink">
                     All bills <ChevronRight className="h-3 w-3" />
                   </Link>
                 }
@@ -342,7 +342,7 @@ export function Dashboard() {
                 <EmptyState
                   icon={<CalendarClock className="h-6 w-6" />}
                   title="No bills tracked"
-                  body="Add your recurring bills and Spendwise predicts when they're next due."
+                  body="Add your recurring bills and Monetr predicts when they're next due."
                   action={
                     <Link to="/bills" className="btn btn-soft btn-sm">
                       Add a bill
@@ -356,12 +356,12 @@ export function Dashboard() {
 
       case 'recent':
         return (
-          <div className={span.recent} key={id}>
-            <Card>
+          <div className={cn(span.recent, 'flex')} key={id}>
+            <Card className="flex w-full flex-col">
               <SectionTitle
                 title="Recent activity"
                 action={
-                  <Link to="/transactions" className="flex items-center gap-0.5 text-[11px] font-semibold text-accent">
+                  <Link to="/transactions" className="flex items-center gap-0.5 text-[11px] font-semibold text-ink">
                     See all <ChevronRight className="h-3 w-3" />
                   </Link>
                 }
@@ -434,7 +434,7 @@ export function Dashboard() {
         className="lg:mx-auto lg:max-w-2xl"
       />
 
-      <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-12">
+      <div className="grid grid-cols-1 items-stretch gap-3.5 lg:grid-cols-12">
         {widgets.map((id) => renderWidget(id))}
       </div>
 

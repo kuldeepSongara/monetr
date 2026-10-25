@@ -32,7 +32,7 @@ export function LockScreen() {
     <div className="flex min-h-dvh flex-col items-center justify-center bg-bg px-6 py-10">
       <div className="flex w-full max-w-xs flex-col items-center">
         <BrandMark size={54} />
-        <h1 className="mt-4 text-lg font-bold text-ink">Spendwise is locked</h1>
+        <h1 className="mt-4 text-lg font-bold text-ink">Monetr is locked</h1>
         <p className="mt-1 flex items-center gap-1.5 text-xs text-muted">
           <LockKeyhole className="h-3 w-3" /> Enter your PIN to continue
         </p>

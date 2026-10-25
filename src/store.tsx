@@ -26,6 +26,7 @@ import {
   updateSettings as dbUpdateSettings,
   storageEstimate,
   seedSampleData,
+  listCurrencyProfiles,
 } from './db/db'
 import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type BudgetRow, type SafeToSpend } from './lib/analytics'
 import { predictBill, type BillSchedule } from './lib/bills'
@@ -49,6 +50,9 @@ interface AppState {
   profiles: AIProfile[]
   rules: Rule[]
   logs: AILogEntry[]
+  currencyProfiles: any[]
+  investments: any[]
+  investmentTxs: any[]
 }
 
 interface StoreValue extends AppState {
@@ -86,6 +90,9 @@ const defaultState: AppState = {
   profiles: [],
   rules: [],
   logs: [],
+  currencyProfiles: [],
+  investments: [],
+  investmentTxs: [],
 }
 
 const AppContext = createContext<StoreValue | null>(null)
@@ -119,7 +126,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refresh = useCallback(async () => {
-    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs] = await Promise.all([
+    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs] = await Promise.all([
       db.settings.toArray(),
       db.categories.orderBy('order').toArray(),
       db.transactions.toArray(),
@@ -129,6 +136,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.profiles.orderBy('priority').toArray(),
       db.rules.toArray(),
       db.aiLog.orderBy('at').reverse().limit(30).toArray(),
+      listCurrencyProfiles().catch(() => []),
+      db.investments.toArray().catch(() => []),
+      db.investmentTxs.toArray().catch(() => []),
     ])
     setState({
       ready: true,
@@ -141,6 +151,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       profiles,
       rules,
       logs,
+      currencyProfiles,
+      investments,
+      investmentTxs,
     })
     storageEstimate().then(setUsage).catch(() => {})
   }, [])
@@ -297,7 +310,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!state.ready || !state.settings.notifications) return
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    const key = `spendwise:notified:${today}`
+    const key = `monetr:notified:${today}`
     if (localStorage.getItem(key)) return
     const due = state.bills
       .filter((b) => b.active && !b.archived)
@@ -315,7 +328,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ? `${first.bill.name} · ${first.schedule?.status === 'overdue' ? 'overdue' : 'due soon'}`
         : `${first.bill.name} and ${due.length - 1} more bill${due.length > 2 ? 's' : ''} need attention`
     try {
-      new Notification('Spendwise · bills', { body, icon: './icon-192.png', tag: 'spendwise-bills' })
+      new Notification('Monetr · bills', { body, icon: './icon-192.png', tag: 'monetr-bills' })
       localStorage.setItem(key, '1')
     } catch {
       /* notifications may be blocked */

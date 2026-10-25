@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
+  BookOpen,
+  Briefcase,
   CalendarClock,
   Download,
+  Flag,
   LayoutDashboard,
   Lock,
   Plus,
@@ -21,19 +24,22 @@ const NAV = [
   { to: '/transactions', label: 'Spend', icon: ReceiptText, title: 'Transactions' },
   { to: '/bills', label: 'Bills', icon: CalendarClock, title: 'Bills & reminders' },
   { to: '/budgets', label: 'Budgets', icon: Target, title: 'Budgets' },
+  { to: '/investments', label: 'Invest', icon: Briefcase, title: 'Investments' },
+  { to: '/flagit', label: 'flagIt', icon: Flag, title: 'flagIt' },
   { to: '/insights', label: 'Insights', icon: Sparkles, title: 'Insights' },
+  { to: '/features', label: 'Guide', icon: BookOpen, title: 'Features Guide' },
 ] as const
 
 export function BrandMark({ size = 36 }: { size?: number }) {
   return (
     <div
-      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-[28%] bg-gradient-to-br from-violet-500 via-indigo-500 to-sky-400 shadow-[0_10px_40px_-12px_rgba(99,102,241,0.9)]"
+      className="relative flex shrink-0 items-center justify-center overflow-hidden rounded-md bg-ink text-bg"
       style={{ width: size, height: size }}
       aria-hidden
     >
-      <svg width={size * 0.52} height={size * 0.52} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 3L4.5 7.5V16.5L12 21L19.5 16.5V7.5L12 3Z" stroke="white" strokeWidth="2" strokeLinejoin="round" opacity="0.9" />
-        <path d="M12 12L19.5 7.5M12 12L4.5 7.5M12 12V21" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.9" />
+      <svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 3L4 7V17L12 21L20 17V7L12 3Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M12 12L20 7M12 12L4 7M12 12V21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     </div>
   )
@@ -46,7 +52,7 @@ export function Shell() {
   const [seed, setSeed] = useState<EditorSeed | null>(null)
 
   const current = NAV.find((n) => n.to === location.pathname)
-  const title = current?.title ?? (location.pathname === '/settings' ? 'Settings' : 'Spendwise')
+  const title = current?.title ?? (location.pathname === '/settings' ? 'Settings' : 'Monetr')
   const dueCount = bills.filter((b) => {
     if (!b.active || b.archived) return false
     const s = schedules.get(b.id)
@@ -65,8 +71,8 @@ export function Shell() {
         <div className="flex items-center gap-2.5 px-1.5 py-2">
           <BrandMark size={38} />
           <div>
-            <p className="text-sm font-bold leading-tight text-ink">Monetr</p>
-            <p className="text-[10px] leading-tight text-muted">Local-first money tracker</p>
+            <p className="text-sm font-semibold leading-tight text-ink">Monetr</p>
+            <p className="text-[10px] leading-tight text-muted">Personal finance</p>
           </div>
         </div>
 

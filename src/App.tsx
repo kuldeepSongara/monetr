@@ -9,6 +9,9 @@ import { Transactions } from './pages/Transactions'
 import { Bills } from './pages/Bills'
 import { Budgets } from './pages/Budgets'
 import { Insights } from './pages/Insights'
+import Investments from './pages/Investments'
+import FlagIt from './pages/FlagIt'
+import Features from './pages/Features'
 import { Settings } from './pages/Settings'
 
 function Splash() {
@@ -17,7 +20,7 @@ function Splash() {
       <div className="animate-pop-in">
         <BrandMark size={52} />
       </div>
-      <p className="text-sm font-semibold text-ink">Spendwise</p>
+      <p className="text-sm font-semibold text-ink">Monetr</p>
       <p className="text-[11px] text-muted">Opening your local data…</p>
     </div>
   )
@@ -54,7 +57,10 @@ function Gate() {
           <Route path="transactions" element={<Transactions />} />
           <Route path="bills" element={<Bills />} />
           <Route path="budgets" element={<Budgets />} />
+          <Route path="investments" element={<Investments />} />
+          <Route path="flagit" element={<FlagIt />} />
           <Route path="insights" element={<Insights />} />
+          <Route path="features" element={<Features />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

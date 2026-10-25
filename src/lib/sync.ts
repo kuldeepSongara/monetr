@@ -9,6 +9,13 @@ const SNAPSHOT_KEYS = [
   'budgets',
   'rules',
   'profiles',
+  'currencyProfiles',
+  'investments',
+  'investmentTxs',
+  'investmentTransfers',
+  'flags',
+  'flagIdeas',
+  'imports',
 ] as const
 
 export function generateSyncId(): string {

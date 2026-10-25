@@ -145,30 +145,43 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
   }
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] }
 
-  const data = (await postJson(
-    `${trimUrl(profile.baseUrl)}/models/${encodeURIComponent(profile.model)}:generateContent`,
-    { 'x-goog-api-key': profile.apiKey, 'Content-Type': 'application/json', ...(profile.extraHeaders ?? {}) },
-    body,
-    timeoutMs,
-    opts.signal,
-  )) as GoogleResponse
+  try {
+    const data = (await postJson(
+      `${trimUrl(profile.baseUrl)}/models/${encodeURIComponent(profile.model)}:generateContent`,
+      { 'x-goog-api-key': profile.apiKey, 'Content-Type': 'application/json', ...(profile.extraHeaders ?? {}) },
+      body,
+      timeoutMs,
+      opts.signal,
+    )) as GoogleResponse
 
-  if (data.promptFeedback?.blockReason) {
-    throw new Error(`Blocked by safety filter (${data.promptFeedback.blockReason})`)
+    if (data.promptFeedback?.blockReason) {
+      throw new Error(`Blocked by safety filter (${data.promptFeedback.blockReason})`)
+    }
+    const candidate = data.candidates?.[0]
+    const text = (candidate?.content?.parts ?? [])
+      .map((p) => p.text ?? '')
+      .join('')
+      .trim()
+    if (!text) {
+      throw new Error(
+        candidate?.finishReason === 'MAX_TOKENS'
+          ? 'The model ran out of output tokens before answering.'
+          : `The model returned an empty response. (finishReason: ${candidate?.finishReason || 'unknown'})`,
+      )
+    }
+    return text
+  } catch (err: any) {
+    if (err?.message?.includes('400')) {
+      throw new Error(`${err.message} — Check API key, model name, or base URL`)
+    }
+    if (err?.message?.includes('401') || err?.message?.includes('403')) {
+      throw new Error(`${err.message} — API key invalid or missing permissions`)
+    }
+    if (err?.message?.includes('404')) {
+      throw new Error(`${err.message} — Model not found. Try gemini-2.5-flash or check model name`)
+    }
+    throw err
   }
-  const candidate = data.candidates?.[0]
-  const text = (candidate?.content?.parts ?? [])
-    .map((p) => p.text ?? '')
-    .join('')
-    .trim()
-  if (!text) {
-    throw new Error(
-      candidate?.finishReason === 'MAX_TOKENS'
-        ? 'The model ran out of output tokens before answering.'
-        : 'The model returned an empty response.',
-    )
-  }
-  return text
 }
 
 async function callOpenAI(profile: AIProfile, opts: AICallOptions, timeoutMs: number): Promise<string> {

@@ -7,6 +7,9 @@ import type {
   BillPayment,
   Budget,
   Category,
+  CurrencyProfile,
+  Investment,
+  InvestmentTx,
   ISODate,
   MetaRow,
   Rule,
@@ -21,7 +24,7 @@ import { predictBill } from '../lib/bills'
 
 export const SCHEMA_VERSION = 1
 
-export const DB_NAME = 'spendwise'
+export const DB_NAME = 'monetr'
 
 class MonetrDB extends Dexie {
   settings!: Table<Settings, string>
@@ -34,6 +37,13 @@ class MonetrDB extends Dexie {
   rules!: Table<Rule, string>
   aiLog!: Table<AILogEntry, string>
   meta!: Table<MetaRow, string>
+  currencyProfiles!: Table<CurrencyProfile, string>
+  investments!: Table<Investment, string>
+  investmentTxs!: Table<InvestmentTx, string>
+  investmentTransfers!: Table<any, string>
+  flags!: Table<any, string>
+  flagIdeas!: Table<any, string>
+  imports!: Table<any, string>
 
   constructor() {
     super(DB_NAME)
@@ -41,16 +51,21 @@ class MonetrDB extends Dexie {
       settings: 'id',
       profiles: 'id, priority',
       categories: 'id, order',
-      transactions: 'id, date, categoryId, merchant, type',
-      bills: 'id, name, active',
-      billPayments: 'id, billId, paidDate',
+      transactions: 'id, date, categoryId, merchant, type, profileId',
+      bills: 'id, name, active, profileId',
+      billPayments: 'id, billId, paidDate, profileId',
       budgets: 'id, categoryId',
       rules: 'id, merchant',
       aiLog: 'id, at',
       meta: 'key',
+      currencyProfiles: 'id, code, isDefault, isBase',
+      investments: 'id, profileId, type, symbol',
+      investmentTxs: 'id, investmentId, profileId, date, type',
+      investmentTransfers: 'id, fromProfileId, toProfileId, date',
+      flags: 'id, kind, status, createdAt',
+      flagIdeas: 'id, status, createdAt',
+      imports: 'id, status, createdAt',
     })
-    // Future schema changes: add `this.version(2).stores({...}).upgrade(tx => ...)`
-    // Never edit version 1 — migrations keep existing data intact.
   }
 }
 
@@ -168,6 +183,119 @@ export async function ensureSeeded(): Promise<void> {
   if ((await db.categories.count()) === 0) {
     await db.categories.bulkPut(makeCategories())
   }
+}
+
+/* ---------------------------- currency profiles ---------------------------- */
+
+export async function listCurrencyProfiles(): Promise<CurrencyProfile[]> {
+  const rows = await db.currencyProfiles.toArray()
+  if (rows.length) return rows.sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name))
+  const settings = (await db.settings.get('settings')) ?? makeDefaultSettings()
+  const at = nowISO()
+  const base: CurrencyProfile = {
+    id: uid('cp_'),
+    name: settings.currency,
+    code: settings.currency,
+    emoji: '🏠',
+    isBase: true,
+    isDefault: true,
+    fxToBase: 1,
+    createdAt: at,
+    updatedAt: at,
+  }
+  await db.currencyProfiles.put(base)
+  return [base]
+}
+
+export async function saveCurrencyProfile(profile: CurrencyProfile): Promise<void> {
+  await db.currencyProfiles.put({ ...profile, updatedAt: nowISO() })
+}
+
+export async function deleteCurrencyProfile(id: string): Promise<void> {
+  const all = await db.currencyProfiles.toArray()
+  if (all.length <= 1) throw new Error('Keep at least one currency profile')
+  const prof = all.find((p) => p.id === id)
+  if (prof?.isBase) throw new Error('Cannot delete the base currency profile')
+  const def = all.find((p) => p.isDefault && p.id !== id) || all.find((p) => p.id !== id)
+  if (!def) return
+  await db.transaction('rw', [db.currencyProfiles, db.transactions, db.bills, db.billPayments, db.investments, db.investmentTxs], async () => {
+    await db.currencyProfiles.delete(id)
+    await db.transactions.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
+    await db.bills.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
+    await db.billPayments.where('profileId').equals(id).modify({ profileId: def.id })
+    await db.investments.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
+    await db.investmentTxs.where('profileId').equals(id).modify({ profileId: def.id })
+  })
+}
+
+export async function setDefaultCurrencyProfile(id: string): Promise<void> {
+  const all = await db.currencyProfiles.toArray()
+  await db.currencyProfiles.bulkPut(
+    all.map((p) => ({ ...p, isDefault: p.id === id, updatedAt: nowISO() })),
+  )
+}
+
+/* ---------------------------------- investments ---------------------------- */
+
+export async function addInvestment(input: Partial<Investment> & { name: string; profileId: string; type: Investment['type'] }): Promise<Investment> {
+  const at = nowISO()
+  const inv: Investment = {
+    id: input.id ?? uid('inv_'),
+    profileId: input.profileId,
+    currency: input.currency || 'USD',
+    type: input.type,
+    symbol: input.symbol?.toUpperCase(),
+    name: input.name,
+    account: input.account,
+    qty: input.qty ?? 0,
+    avgCost: input.avgCost ?? 0,
+    fees: input.fees ?? 0,
+    notes: input.notes,
+    openedAt: input.openedAt,
+    archived: false,
+    createdAt: at,
+    updatedAt: at,
+  }
+  await db.investments.put(inv)
+  return inv
+}
+
+export async function updateInvestment(id: string, patch: Partial<Investment>): Promise<void> {
+  const ex = await db.investments.get(id)
+  if (!ex) return
+  await db.investments.put({ ...ex, ...patch, id, updatedAt: nowISO() })
+}
+
+export async function deleteInvestment(id: string): Promise<void> {
+  await db.transaction('rw', [db.investments, db.investmentTxs], async () => {
+    await db.investments.delete(id)
+    await db.investmentTxs.where('investmentId').equals(id).delete()
+  })
+}
+
+export async function addInvestmentTx(input: Omit<InvestmentTx, 'id' | 'createdAt'> & { id?: string }): Promise<InvestmentTx> {
+  const tx: InvestmentTx = {
+    id: input.id ?? uid('itx_'),
+    investmentId: input.investmentId,
+    profileId: input.profileId,
+    type: input.type,
+    date: input.date,
+    qty: input.qty,
+    price: input.price,
+    amount: input.amount,
+    currency: input.currency,
+    fxRate: input.fxRate ?? 1,
+    baseAmount: input.baseAmount,
+    fees: input.fees,
+    note: input.note,
+    createdAt: nowISO(),
+  }
+  await db.investmentTxs.put(tx)
+  return tx
+}
+
+export async function deleteInvestmentTx(id: string): Promise<void> {
+  await db.investmentTxs.delete(id)
 }
 
 /* -------------------------------- settings --------------------------------- */
@@ -570,7 +698,7 @@ export async function buildBackup(): Promise<BackupFile> {
     db.rules.toArray(),
   ])
   return {
-    app: 'spendwise',
+    app: 'monetr',
     schemaVersion: SCHEMA_VERSION,
     exportedAt: nowISO(),
     data: {
@@ -589,12 +717,12 @@ export async function buildBackup(): Promise<BackupFile> {
 export async function exportBackup(): Promise<void> {
   const backup = await buildBackup()
   await setMeta('lastBackupAt', nowISO())
-  downloadFile(`spendwise-backup-${todayISO()}.json`, JSON.stringify(backup, null, 2))
+  downloadFile(`monetr-backup-${todayISO()}.json`, JSON.stringify(backup, null, 2))
 }
 
 export async function importBackup(backup: BackupFile, mode: 'replace' | 'merge'): Promise<{ added: number }> {
-  if (backup?.app !== 'spendwise' || !backup.data) {
-    throw new Error('That file is not a Spendwise backup.')
+  if (backup?.app !== 'monetr' || !backup.data) {
+    throw new Error('That file is not a Monetr backup.')
   }
   const d = backup.data
   if (mode === 'replace') {
@@ -743,7 +871,7 @@ export async function exportCsv(): Promise<void> {
   const csv = [header, ...rows]
     .map((r) => r.map((cell) => (/[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell)).join(','))
     .join('\n')
-  downloadFile(`spendwise-transactions-${todayISO()}.csv`, csv, 'text/csv')
+  downloadFile(`monetr-transactions-${todayISO()}.csv`, csv, 'text/csv')
 }
 
 function icsEscape(s: string): string {
@@ -762,10 +890,10 @@ export async function exportBillsIcs(): Promise<void> {
   const lines: string[] = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Spendwise//Bills//EN',
+    'PRODID:-//Monetr//Bills//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    'X-WR-CALNAME:Spendwise bills',
+    'X-WR-CALNAME:Monetr bills',
   ]
 
   for (const bill of bills.filter((b) => b.active && !b.archived)) {
@@ -787,7 +915,7 @@ export async function exportBillsIcs(): Promise<void> {
                 : 'RRULE:FREQ=MONTHLY'
     lines.push(
       'BEGIN:VEVENT',
-      `UID:${bill.id}@spendwise`,
+      `UID:${bill.id}@monetr`,
       `DTSTAMP:${stamp}`,
       `DTSTART:${dt}`,
       `SUMMARY:${icsEscape(`💳 ${bill.name}`)}`,
@@ -803,7 +931,7 @@ export async function exportBillsIcs(): Promise<void> {
   }
 
   lines.push('END:VCALENDAR')
-  downloadFile(`spendwise-bills-${today}.ics`, lines.join('\r\n'), 'text/calendar')
+  downloadFile(`monetr-bills-${today}.ics`, lines.join('\r\n'), 'text/calendar')
 }
 
 /* -------------------------------- sample data ------------------------------ */
