@@ -1219,7 +1219,7 @@ export function Settings() {
               <Input
                 value={form.fallbackModels}
                 onChange={(e) => setForm({ ...form, fallbackModels: e.target.value })}
-                placeholder="e.g. gemini-2.5-flash-lite, gemini-2.0-flash"
+                placeholder="e.g. gemini-flash-lite-latest, gemini-2.5-flash"
               />
             </Field>
 

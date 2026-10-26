@@ -33,10 +33,10 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     short: 'Gemini',
     kind: 'google',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    models: ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-flash'],
-    defaultModel: 'gemini-2.5-flash',
-    fallbackModels: ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'],
-    freeTier: 'Free key; quotas are per model and Flash is often overloaded at peak times.',
+    models: ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'],
+    defaultModel: 'gemini-flash-latest',
+    fallbackModels: ['gemini-flash-lite-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    freeTier: 'Free key; quotas are per model and Flash is often overloaded at peak times. The “-latest” names always point at Google’s current Flash, so they never retire.',
     keyUrl: 'https://aistudio.google.com/apikey',
     keyHint: 'Paste your Google AI Studio API key (AIza...)',
     supportsVision: true,
@@ -98,11 +98,11 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     short: 'Groq',
     kind: 'openai',
     baseUrl: 'https://api.groq.com/openai/v1',
-    models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'meta-llama/llama-4-scout-17b-16e-instruct', 'llama-3.1-8b-instant'],
+    models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'qwen/qwen3.6-27b', 'llama-3.1-8b-instant'],
     defaultModel: 'llama-3.3-70b-versatile',
     fallbackModels: ['openai/gpt-oss-120b', 'llama-3.1-8b-instant'],
-    freeTier: 'Free key, very fast, generous daily limits. Screenshots automatically use Llama 4 Scout (reads images) on the same key.',
-    visionModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    freeTier: 'Free key, very fast, generous daily limits. Screenshots automatically use Qwen 3.6 27B (reads images) on the same key.',
+    visionModel: 'qwen/qwen3.6-27b',
     keyUrl: 'https://console.groq.com/keys',
     keyHint: 'Starts with gsk_…',
     supportsVision: false,
@@ -244,7 +244,33 @@ export function canUseProfile(profile: AIProfile): boolean {
   return true
 }
 
-const VISION_MODEL = /llama-4|vision|-vl\b|vl-|pixtral|gemini|gemma-3|gpt-4o|gpt-4\.1|gpt-5|claude|qwen2\.5-vl|qwen-vl|llava|mistral-small-3\.[12]|mistral-medium/i
+const VISION_MODEL = /llama-4|vision|-vl\b|vl-|pixtral|gemini|gemma-3|gpt-4o|gpt-4\.1|gpt-5|claude|qwen2\.5-vl|qwen-vl|qwen3\.[5-9]|llava|mistral-small-3\.[12]|mistral-medium/i
+
+/**
+ * Models the provider has switched off, mapped to what replaced them. Saved profiles keep working
+ * without editing: the client swaps these in at call time.
+ */
+const RETIRED_MODELS: Partial<Record<ProviderId, Record<string, string>>> = {
+  google: {
+    'gemini-2.0-flash': 'gemini-flash-latest',
+    'gemini-2.0-flash-001': 'gemini-flash-latest',
+    'gemini-2.0-flash-lite': 'gemini-flash-lite-latest',
+    'gemini-1.5-flash': 'gemini-flash-latest',
+    'gemini-1.5-flash-8b': 'gemini-flash-lite-latest',
+    'gemini-1.5-pro': 'gemini-flash-latest',
+  },
+  groq: {
+    'meta-llama/llama-4-scout-17b-16e-instruct': 'qwen/qwen3.6-27b',
+    'meta-llama/llama-4-maverick-17b-128e-instruct': 'qwen/qwen3.6-27b',
+    'llama-3.2-11b-vision-preview': 'qwen/qwen3.6-27b',
+    'llama-3.2-90b-vision-preview': 'qwen/qwen3.6-27b',
+  },
+}
+
+/** The model to actually call: retired names are swapped for their replacement. */
+export function liveModel(provider: ProviderId, model: string): string {
+  return RETIRED_MODELS[provider]?.[model.trim()] ?? model.trim()
+}
 
 /** Can this exact model read images? */
 export function modelSeesImages(profile: AIProfile, model = profile.model): boolean {

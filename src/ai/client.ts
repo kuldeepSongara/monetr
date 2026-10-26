@@ -1,7 +1,7 @@
 import type { AIAttempt, AIProfile, ProfileHealth, Settings } from '../types'
 import { nowISO } from '../lib/dates'
 import { db, logAI, setMeta, setProfileHealth, updateSettings } from '../db/db'
-import { PROVIDERS, canUseProfile, capabilityGap, modelSeesImages, profileLabel } from './providers'
+import { PROVIDERS, canUseProfile, capabilityGap, liveModel, modelSeesImages, profileLabel } from './providers'
 
 export interface AICallOptions {
   prompt: string
@@ -195,7 +195,8 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
   if (temp !== undefined) genConfig.temperature = temp
   if (opts.json) genConfig.responseMimeType = 'application/json'
   // Flash models "think" before answering by default; for reading a table that's just latency.
-  if (opts.fast && /flash/i.test(profile.model) && !/2\.0|1\.5/.test(profile.model)) genConfig.thinkingConfig = { thinkingBudget: 0 }
+  // Only on 2.5 Flash, where a zero budget is documented; newer Flash models handle thinking differently.
+  if (opts.fast && /2\.5-flash/i.test(profile.model)) genConfig.thinkingConfig = { thinkingBudget: 0 }
   if (Object.keys(genConfig).length) body.generationConfig = genConfig
 
   if (opts.system?.trim()) {
@@ -203,7 +204,7 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
   }
 
   const base = trimUrl(profile.baseUrl) || 'https://generativelanguage.googleapis.com/v1beta'
-  const url = `${base}/models/${encodeURIComponent(profile.model || 'gemini-2.5-flash')}:generateContent`
+  const url = `${base}/models/${encodeURIComponent(profile.model || 'gemini-flash-latest')}:generateContent`
 
   try {
     const data = (await postJson(
@@ -239,7 +240,7 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
     else if (status === 429) err.message = `${msg} — Free-tier quota hit for this model.`
     else if (status === 400) err.message = `${msg} — Check API key, model name, or base URL.`
     else if (status === 401 || status === 403 || msg.includes('API_KEY')) err.message = `${msg} — API key invalid or missing.`
-    else if (status === 404) err.message = `${msg} — Model not found. Try gemini-2.5-flash or gemini-flash-latest.`
+    else if (status === 404) err.message = `${msg} — Model not found or retired. Try gemini-flash-latest.`
     throw err
   }
 }
@@ -264,6 +265,8 @@ async function callOpenAI(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
   }
   const maxTokens = opts.maxTokens ?? profile.maxTokens
   if (maxTokens) body.max_tokens = maxTokens
+  // Qwen 3.x on Groq "thinks" by default — slow, and the reasoning can leak into the answer.
+  if (profile.provider === 'groq' && /qwen3/i.test(profile.model)) body.reasoning_effort = 'none'
 
   const data = (await postJson(
     `${trimUrl(profile.baseUrl)}/chat/completions`,
@@ -278,7 +281,7 @@ async function callOpenAI(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
     typeof message?.content === 'string'
       ? message.content
       : (message?.content ?? []).map((c) => c.text ?? '').join('')
-  const trimmed = (text || '').trim()
+  const trimmed = (text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
   if (!trimmed) {
     throw new Error(message?.refusal ? `Refused: ${message.refusal}` : 'The model returned an empty response.')
   }
@@ -357,7 +360,12 @@ class BudgetError extends Error {
 }
 
 async function callWithRecovery(profile: AIProfile, opts: AICallOptions): Promise<{ text: string; model: string }> {
-  let models = [profile.model, ...(profile.fallbackModels ?? [])].map((m) => m.trim()).filter(Boolean)
+  // Retired model names are swapped for their replacements, and the provider's current backups are
+  // added at the end so an old saved profile never dead-ends on models that no longer exist.
+  const defaults = PROVIDERS[profile.provider]?.fallbackModels ?? []
+  let models = [profile.model, ...(profile.fallbackModels ?? []), ...defaults]
+    .map((m) => liveModel(profile.provider, m))
+    .filter(Boolean)
   if (opts.images?.length) {
     // Images: only image-capable models, plus the provider's vision model on the same key (e.g. Groq → Llama 4 Scout).
     const visionModel = PROVIDERS[profile.provider]?.visionModel
@@ -374,6 +382,8 @@ async function callWithRecovery(profile: AIProfile, opts: AICallOptions): Promis
         lastErr = err
         if (opts.signal?.aborted || err instanceof BudgetError) throw err
         if (isModelProblem(err)) break
+        // 400s are usually about this model (unsupported option, input type) — try the next model.
+        if (err instanceof HttpError && err.status === 400) break
         if (!isTransient(err)) throw err
         // A timeout means this model is slow right now — waiting again on it just doubles the wait.
         if (err instanceof HttpError && err.status === 408) break
@@ -544,10 +554,12 @@ export interface TestResult {
 export async function testProfile(profile: AIProfile): Promise<TestResult> {
   const started = performance.now()
   try {
-    const text = await callProvider(profile, {
+    const text = await callProvider({ ...profile, model: liveModel(profile.provider, profile.model) }, {
       prompt: 'Reply with the single word: OK',
       task: 'connection-test',
-      maxTokens: 32,
+      // Room for models that think before answering (they count thinking as output).
+      maxTokens: 1024,
+      fast: true,
       temperature: 0,
       timeoutMs: 30_000,
     })
