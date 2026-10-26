@@ -76,18 +76,18 @@ function draw(size, { maskable = false } = {}) {
   const S = size
   const inner = maskable ? S * 0.78 : S
   const pad = (S - inner) / 2
-  const radius = maskable ? 0 : S * 0.225
+  const radius = 0
   const out = Buffer.alloc(S * S * 4)
   const bars = [
-    { h: 0.34, a: 0.72 },
-    { h: 0.52, a: 0.88 },
-    { h: 0.7, a: 1 },
+    { h: 0.32, a: 1 },
+    { h: 0.5, a: 1 },
+    { h: 0.68, a: 1 },
   ]
-  const barW = inner * 0.115
-  const gap = inner * 0.06
+  const barW = inner * 0.12
+  const gap = inner * 0.065
   const totalW = barW * 3 + gap * 2
   const startX = pad + (inner - totalW) / 2
-  const baseline = pad + inner * 0.77
+  const baseline = pad + inner * 0.76
 
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
@@ -100,24 +100,29 @@ function draw(size, { maskable = false } = {}) {
         for (let sx = 0; sx < SS; sx++) {
           const px = x + (sx + 0.5) / SS
           const py = y + (sy + 0.5) / SS
-          if (!insideRoundRect(px, py, pad, pad, pad + inner, pad + inner, radius)) continue
+          if (maskable && !insideRoundRect(px, py, pad, pad, pad + inner, pad + inner, radius)) continue
 
-          // Diagonal gradient: #8B6BFF → #5537E0
-          const t = Math.min(1, Math.max(0, (px - pad + (py - pad)) / (inner * 2)))
-          let cr = Math.round(0x8b + (0x55 - 0x8b) * t)
-          let cg = Math.round(0x6b + (0x37 - 0x6b) * t)
-          let cb = Math.round(0xff + (0xe0 - 0xff) * t)
-          let ca = 255
+          let cr = 0
+          let cg = 0
+          let cb = 0
+          let ca = 0
 
           for (let i = 0; i < bars.length; i++) {
             const cx = startX + i * (barW + gap) + barW / 2
             const top = baseline - inner * bars[i].h
             if (insideCapsule(px, py, cx, top, baseline, barW / 2)) {
-              const alpha = bars[i].a
-              cr = Math.round(cr * (1 - alpha) + 255 * alpha)
-              cg = Math.round(cg * (1 - alpha) + 255 * alpha)
-              cb = Math.round(cb * (1 - alpha) + 255 * alpha)
+              cr = 0
+              cg = 0
+              cb = 0
+              ca = 255
             }
+          }
+
+          if (ca === 0) {
+            cr = 0
+            cg = 0
+            cb = 0
+            ca = 0
           }
 
           r += cr
