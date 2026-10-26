@@ -40,6 +40,7 @@ import { requestAutoSync, setSyncState, startAutoSync } from './lib/sync'
 import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type BudgetRow, type SafeToSpend } from './lib/analytics'
 import { predictBill, type BillSchedule } from './lib/bills'
 import { findDuplicates, type DuplicatePair } from './lib/duplicates'
+import { resumeImports } from './lib/importJobs'
 import { todayISO } from './lib/dates'
 import { randomSalt } from './lib/utils'
 
@@ -189,6 +190,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (s?.onboarded) await reconcileAutopay(s.currency).catch(() => 0)
       })
       .then(() => refresh())
+      .then(() => resumeImports())
       .catch((err) => {
         console.error('Failed to open local database', err)
         notify(err instanceof Error ? err.message : 'Could not open local storage', 'error')

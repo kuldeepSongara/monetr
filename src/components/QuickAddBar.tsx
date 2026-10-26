@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { ArrowRight, Loader2, ScanLine, Sparkles } from 'lucide-react'
+import { ArrowRight, Images, Loader2, Receipt, ScanLine, Sparkles } from 'lucide-react'
 import { useApp } from '../store'
 import type { EditorSeed } from './TransactionEditor'
 import { fileToDataUrl } from '../lib/image'
 import { parseQuickAdd, scanReceipt } from '../ai/tasks'
 import { canUseProfile } from '../ai/providers'
-import { pickFile } from '../lib/utils'
+import { pickFile, pickFiles } from '../lib/utils'
+import { startImport } from '../lib/importJobs'
 import { parseQuickLocal } from '../lib/quickParse'
 import { cn } from './ui'
 
@@ -22,6 +23,35 @@ export function QuickAddBar({
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  /** Screenshots with several spendings go to the background import (review in flagIt). */
+  async function handleMulti() {
+    setMenuOpen(false)
+    if (!aiReady) {
+      notify('Reading screenshots needs an AI profile (Settings → AI profiles).', 'error')
+      return
+    }
+    const files = await pickFiles('image/*')
+    let started = 0
+    for (const file of files) {
+      try {
+        const res = await startImport(file)
+        if (res.kind === 'started') started++
+        else if (res.kind === 'in-progress') notify(`${file.name} is already being read.`, 'info')
+        else if (res.kind === 'awaiting-review') notify(`${file.name} was already read — it's waiting for review in flagIt.`, 'info')
+        else notify(`${file.name} was imported before, so it was skipped. To read it again, use flagIt → Statement import.`, 'info')
+      } catch (err) {
+        notify(err instanceof Error ? err.message : `Could not read ${file.name}`, 'error')
+      }
+    }
+    if (started) {
+      notify(
+        `Reading ${started} screenshot${started === 1 ? '' : 's'} in the background. Carry on — the header shows progress, and you'll review every line before it's added.`,
+        'info',
+      )
+    }
+  }
   const aiReady = profiles.some(canUseProfile)
 
   /** Offline fallback so logging a spend never waits on an AI provider. */
@@ -71,6 +101,7 @@ export function QuickAddBar({
   }
 
   async function handleScan() {
+    setMenuOpen(false)
     if (scanning) return
     if (!aiReady) {
       notify('Receipt scanning needs an AI profile (Settings → AI profiles).', 'error')
@@ -107,7 +138,7 @@ export function QuickAddBar({
   return (
     <div
       className={cn(
-        'flex items-center gap-2 rounded-2xl border border-line/80 bg-surface px-3 py-2 shadow-card',
+        'relative flex items-center gap-2 rounded-2xl border border-line/80 bg-surface px-3 py-2 shadow-card',
         className,
       )}
     >
@@ -124,14 +155,36 @@ export function QuickAddBar({
       />
       <button
         type="button"
-        onClick={handleScan}
+        onClick={() => setMenuOpen((v) => !v)}
         className="btn btn-ghost btn-icon h-9 w-9 rounded-lg"
-        title="Scan a receipt"
-        aria-label="Scan a receipt"
+        title="Add from a photo or screenshot"
+        aria-label="Add from a photo or screenshot"
+        aria-expanded={menuOpen}
         disabled={scanning}
       >
         {scanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ScanLine className="h-4 w-4" />}
       </button>
+      {menuOpen ? (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+          <div className="absolute right-2 top-full z-40 mt-1.5 w-72 overflow-hidden rounded-xl border border-line/80 bg-surface shadow-card">
+            <button type="button" onClick={handleScan} className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left hover:bg-surface2">
+              <Receipt className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              <span>
+                <span className="block text-[12px] font-semibold text-ink">One receipt</span>
+                <span className="block text-[10px] text-muted">A single purchase — opens it ready to save</span>
+              </span>
+            </button>
+            <button type="button" onClick={handleMulti} className="flex w-full items-start gap-2.5 border-t border-line/60 px-3 py-2.5 text-left hover:bg-surface2">
+              <Images className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              <span>
+                <span className="block text-[12px] font-semibold text-ink">Screenshots with several spendings</span>
+                <span className="block text-[10px] text-muted">Bank or card app screenshots — pick one or many; read in the background, you review before adding</span>
+              </span>
+            </button>
+          </div>
+        </>
+      ) : null}
       <button
         type="button"
         onClick={handleParse}

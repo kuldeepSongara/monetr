@@ -19,6 +19,7 @@ import { useApp } from '../store'
 import { cn } from './ui'
 import { TransactionEditor, type EditorSeed } from './TransactionEditor'
 import { formatDate } from '../lib/dates'
+import { ImportNotifier, ImportStatus } from './ImportStatus'
 
 const NAV = [
   { to: '/', label: 'Home', icon: LayoutDashboard, title: 'Overview' },
@@ -142,6 +143,7 @@ export function Shell() {
             <p className="truncate text-sm font-semibold leading-tight text-ink">{title}</p>
             <p className="text-[10px] leading-tight text-muted">{formatDate(today, 'long')}</p>
           </div>
+          <ImportStatus />
           {canInstall ? (
             <button type="button" onClick={installApp} className="btn btn-ghost btn-icon h-9 w-9 rounded-lg" aria-label="Install app">
               <Download className="h-4 w-4" />
@@ -166,6 +168,7 @@ export function Shell() {
               </p>
             </div>
             <div className="flex items-center gap-2">
+              <ImportStatus />
               {settings.lockEnabled ? (
                 <button type="button" onClick={lock} className="btn btn-ghost btn-sm">
                   <Lock className="h-3.5 w-3.5" /> Lock
@@ -250,6 +253,7 @@ export function Shell() {
         </div>
       ) : null}
 
+      <ImportNotifier />
       <TransactionEditor open={editorOpen} onClose={() => setEditorOpen(false)} seed={seed} />
     </div>
   )

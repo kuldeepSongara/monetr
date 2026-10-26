@@ -66,6 +66,20 @@ export function downloadFile(filename: string, content: string, mime = 'applicat
   setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
+/** Pick one or more files (e.g. several screenshots at once). Pauses auto-lock like pickFile. */
+export function pickFiles(accept: string): Promise<File[]> {
+  const resume = suspendAutoLock(5 * 60_000)
+  return new Promise<File[]>((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = accept
+    input.multiple = true
+    input.onchange = () => resolve(Array.from(input.files ?? []))
+    input.oncancel = () => resolve([])
+    input.click()
+  }).finally(() => window.setTimeout(resume, 1500))
+}
+
 /**
  * Open the system file picker. Auto-lock is paused while the picker (or camera) is open — on a
  * phone that hides the app, and we don't want to lock you out mid-scan.

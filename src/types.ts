@@ -423,12 +423,44 @@ export interface FlagIdea {
   updatedAt?: string
 }
 
+/** One line of a statement waiting for your review. */
+export interface ImportLine {
+  key: string
+  date: string
+  merchant: string
+  amount: number
+  currency: string
+  type: 'expense' | 'income' | 'transfer' | 'refund'
+  categoryId: string
+  note?: string
+  confidence: number
+  include: boolean
+  duplicateOf?: string
+}
+
+/**
+ * A statement import, kept in IndexedDB so it survives leaving the screen, the app going to the
+ * background, or a reload. Local to this device (not synced).
+ */
 export interface ImportRecord {
   id: string
-  status: 'review' | 'imported' | 'discarded'
+  status: 'queued' | 'processing' | 'review' | 'failed' | 'interrupted' | 'imported' | 'discarded'
   fileName?: string
+  fileSize?: number
+  /** SHA-256 of the file contents — spots the same file uploaded twice. */
+  fileHash?: string
+  /** Kept until the import is finished so a failed/interrupted read can be retried without re-uploading. */
+  source?: { kind: 'image' | 'pdf'; dataUrl: string } | { kind: 'text'; text: string }
+  lines?: ImportLine[]
+  rates?: Record<string, string>
+  error?: string
+  /** 'device' = read locally (CSV), otherwise the AI profile that read it. */
+  readBy?: string
   count: number
+  importedCount?: number
   createdAt: string
+  startedAt?: string
+  finishedAt?: string
 }
 
 export interface BackupFile {

@@ -1,19 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
-import { BrainCircuit, Check, FileUp, Flag, Lightbulb, Trash2, Upload } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { BrainCircuit, Check, FileCheck2, FileUp, Flag, Lightbulb, Loader2, RotateCw, Trash2, Upload } from 'lucide-react'
 import { useApp } from '../store'
-import type { FlagEntry, FlagIdea, TxnType } from '../types'
+import type { FlagEntry, FlagIdea, ImportRecord, TxnType } from '../types'
 import { addTransaction, db, learnRules, recordDeletion } from '../db/db'
 import { buildSpendContext } from '../ai/aiContext'
-import { extractStatement, flagReview, habitForecast, preSpendCheck, type StatementLine, type StatementSource } from '../ai/tasks'
+import { flagReview, habitForecast, preSpendCheck, type StatementLine } from '../ai/tasks'
 import { canUseProfile } from '../ai/providers'
-import { payCycle, shiftPeriod, daysBetween, formatDate } from '../lib/dates'
+import { payCycle, shiftPeriod, daysBetween, formatDate, relativeTime } from '../lib/dates'
 import { CURRENCIES, formatMoney, minorFactor, toMinor } from '../lib/money'
-import { fileToDataUrl } from '../lib/image'
 import { computeHolding, portfolioTotals } from '../lib/investments'
-import { findDuplicate, ruleCategory, suggestedFxRate } from '../lib/suggest'
-import { pickFile, uid } from '../lib/utils'
-import { parseStatementCsv } from '../lib/csvImport'
-import { Badge, Button, Card, Field, Input, Markdown, SectionTitle, Select, cn } from '../components/ui'
+import { findDuplicate, suggestedFxRate } from '../lib/suggest'
+import { pickFiles, uid } from '../lib/utils'
+import { discardImport, markImported, retryImport, saveReview, startImport } from '../lib/importJobs'
+import { useImports } from '../components/ImportStatus'
+import { useSearchParams } from 'react-router-dom'
+import { Badge, Button, Card, Confirm, Field, Input, Markdown, SectionTitle, Select, cn } from '../components/ui'
 
 type Tab = 'flags' | 'pre' | 'habits' | 'import'
 
@@ -27,7 +28,12 @@ export default function FlagIt() {
   const app = useApp()
   const { notify, profiles, refresh, settings, transactions, categories, rules, today, currencyProfiles } = app
   const base = settings.currency
-  const [tab, setTab] = useState<Tab>('flags')
+  const [params] = useSearchParams()
+  const [tab, setTab] = useState<Tab>(() => (params.get('tab') as Tab) || 'flags')
+  useEffect(() => {
+    const t = params.get('tab') as Tab | null
+    if (t) setTab(t)
+  }, [params])
   const [flags, setFlags] = useState<FlagEntry[]>([])
   const [ideas, setIdeas] = useState<FlagIdea[]>([])
   const [idea, setIdea] = useState({ title: '', price: '', url: '', notes: '' })
@@ -141,39 +147,61 @@ export default function FlagIt() {
   }
 
   /* ---------------------------- statement import ------------------------- */
-  async function scan() {
-    const file = await pickFile('image/*,application/pdf,.pdf,.csv,.txt,text/plain,text/csv')
-    if (!file) return
-    setBusy('import')
-    setFileName(file.name)
-    try {
-      let source: StatementSource
-      if (file.type.startsWith('image/')) source = { kind: 'image', dataUrl: await fileToDataUrl(file, 2000, 0.85) }
-      else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-        if (file.size > 15 * 1024 * 1024) throw new Error('That PDF is over 15 MB. Export a shorter date range.')
-        source = { kind: 'pdf', dataUrl: await fileToDataUrl(file) }
-      } else source = { kind: 'text', text: await file.text() }
+  // Reading happens in a background job (lib/importJobs) that survives leaving this screen.
+  const jobs = useImports()
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [reimport, setReimport] = useState<{ file: File; job: ImportRecord } | null>(null)
+  const reviewJobs = jobs.filter((j) => j.status === 'review')
+  const activeJob = jobs.find((j) => j.id === activeId && j.status === 'review') ?? reviewJobs[reviewJobs.length - 1]
+  const runningJobs = jobs.filter((j) => j.status === 'queued' || j.status === 'processing')
+  const problemJobs = jobs.filter((j) => j.status === 'failed' || j.status === 'interrupted')
+  const history = jobs.filter((j) => j.status === 'imported').slice(0, 5)
 
-      // CSV exports are read locally first — instant, free, and works when AI is down.
-      const local = source.kind === 'text' ? parseStatementCsv(source.text, base, rules, today) : null
-      if (!local && !aiReady) throw new Error('This file needs an AI profile to read. CSV exports with a header row work offline.')
-      const { lines } = local ? { lines: local } : await extractStatement(source, categories, base)
-      if (!lines.length) throw new Error('No transactions found in that file.')
-      const rows: ReviewRow[] = lines.map((l) => {
-        const ruled = l.type !== 'transfer' ? ruleCategory(l.merchant, rules) : undefined
-        const amountMinor = toMinor(l.amount, l.currency)
-        const dup = findDuplicate({ date: l.date, merchant: l.merchant, amount: amountMinor, currency: l.currency }, transactions)
-        return { ...l, categoryId: ruled ?? l.categoryId, key: uid('r_'), include: !dup && l.confidence >= 0.5, duplicateOf: dup?.id }
-      })
-      setReview(rows)
-      const foreign = [...new Set(rows.map((r) => r.currency).filter((c) => c !== base))]
-      setRates(Object.fromEntries(foreign.map((c) => [c, String(suggestedFxRate(c, base, transactions, currencyProfiles) ?? '')])))
-      await db.imports.put({ id: uid('imp_'), status: 'review', fileName: file.name, count: rows.length, createdAt: new Date().toISOString() })
+  // Load the selected job's lines into the editable review (once per job).
+  const loadedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!activeJob) {
+      loadedFor.current = null
+      setReview([])
+      return
+    }
+    if (loadedFor.current === activeJob.id) return
+    loadedFor.current = activeJob.id
+    // Re-check against what's recorded *now* — e.g. an overlapping screenshot you imported a minute ago.
+    setReview(
+      ((activeJob.lines ?? []) as ReviewRow[]).map((r) => {
+        const dup = findDuplicate({ date: r.date, merchant: r.merchant, amount: toMinor(r.amount, r.currency), currency: r.currency }, transactions)
+        return dup && !r.duplicateOf ? { ...r, duplicateOf: dup.id, include: false } : r
+      }),
+    )
+    setRates(activeJob.rates ?? {})
+    setFileName(activeJob.fileName ?? 'Statement')
+  }, [activeJob])
+
+  // Persist review edits so they survive navigating away.
+  useEffect(() => {
+    if (!activeJob || loadedFor.current !== activeJob.id) return
+    const t = window.setTimeout(() => void saveReview(activeJob.id, review, rates), 400)
+    return () => window.clearTimeout(t)
+  }, [review, rates, activeJob])
+
+  async function queue(file: File, force = false) {
+    try {
+      const res = await startImport(file, { force })
+      if (res.kind === 'started') notify(`Reading ${file.name}. You can leave this screen — you'll get a notice when it's ready.`, 'info')
+      else if (res.kind === 'in-progress') notify(`${file.name} is already being read — no need to upload it again.`, 'info')
+      else if (res.kind === 'awaiting-review') {
+        setActiveId(res.job.id)
+        notify(`${file.name} was already read and is waiting for your review below.`, 'info')
+      } else setReimport({ file, job: res.job })
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Could not read that file', 'error')
-    } finally {
-      setBusy(null)
     }
+  }
+
+  async function scan() {
+    const files = await pickFiles('image/*,application/pdf,.pdf,.csv,.txt,text/plain,text/csv')
+    for (const f of files) await queue(f)
   }
 
   function updateRow(key: string, patch: Partial<ReviewRow>) {
@@ -207,8 +235,11 @@ export default function FlagIt() {
         )
       }
       await learnRules(chosen.filter((r) => r.type !== 'transfer').map((r) => ({ merchant: r.merchant, categoryId: r.categoryId })))
-      setReview([])
+      // Refresh first so the next review (e.g. an overlapping screenshot) is checked against these new entries.
       await refresh()
+      loadedFor.current = null
+      setReview([])
+      if (activeJob) await markImported(activeJob.id, chosen.length)
       notify(`Imported ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`, 'success')
     } catch (e) {
       notify(e instanceof Error ? e.message : 'Import failed', 'error')
@@ -320,11 +351,56 @@ export default function FlagIt() {
 
       {tab === 'import' ? (
         <Card>
-          <SectionTitle title="Import a statement" sub="Screenshot, PDF, CSV or text — review every line before it's added" />
-          <Button variant="soft" className="w-full" onClick={scan} loading={busy === 'import'}>
-            <FileUp className="h-4 w-4" /> Choose a statement file
+          <SectionTitle title="Import several spendings" sub="Screenshots of your bank app, a PDF/CSV statement or text — review every line before it's added" />
+          <Button variant="soft" className="w-full" onClick={scan}>
+            <FileUp className="h-4 w-4" /> Choose screenshots or a statement
           </Button>
-          <p className="mt-1.5 text-[10px] text-muted">CSV exports are read on your device — no AI needed. PDFs need a Gemini, Claude or OpenAI profile; screenshots need a vision model.</p>
+          <p className="mt-1.5 text-[10px] text-muted">
+            Reading continues in the background — leave this screen any time; the header shows progress. CSV exports are read
+            on your device with no AI. PDFs need a Gemini, Claude or OpenAI profile; screenshots need a vision model.
+          </p>
+
+          {runningJobs.length || problemJobs.length || reviewJobs.length > 1 ? (
+            <div className="mt-3 space-y-1.5">
+              {runningJobs.map((j) => (
+                <div key={j.id} className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.05] px-3 py-2 text-[11px]">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+                  <span className="min-w-0 flex-1 truncate text-ink">{j.fileName}</span>
+                  <span className="shrink-0 text-muted">{j.status === 'queued' ? 'waiting its turn' : `reading · ${relativeTime(j.startedAt ?? j.createdAt)}`}</span>
+                </div>
+              ))}
+              {problemJobs.map((j) => (
+                <div key={j.id} className="rounded-xl border border-warn/30 bg-warn/[0.06] px-3 py-2 text-[11px]">
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-medium text-ink">{j.fileName}</span>
+                    {j.source ? (
+                      <Button size="sm" variant="soft" onClick={() => retryImport(j.id)}>
+                        <RotateCw className="h-3 w-3" /> Retry
+                      </Button>
+                    ) : null}
+                    <Button size="sm" variant="plain" className="px-1.5 text-muted" onClick={() => discardImport(j.id)}>
+                      Dismiss
+                    </Button>
+                  </div>
+                  <p className="mt-0.5 text-warn">{j.error}</p>
+                </div>
+              ))}
+              {reviewJobs.length > 1
+                ? reviewJobs.map((j) => (
+                    <button
+                      key={j.id}
+                      type="button"
+                      onClick={() => setActiveId(j.id)}
+                      className={cn('flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px]', activeJob?.id === j.id ? 'border-good/50 bg-good/[0.06]' : 'border-line/70')}
+                    >
+                      <FileCheck2 className="h-3.5 w-3.5 shrink-0 text-good" />
+                      <span className="min-w-0 flex-1 truncate text-ink">{j.fileName}</span>
+                      <span className="text-muted">{j.count} lines to review</span>
+                    </button>
+                  ))
+                : null}
+            </div>
+          ) : null}
 
           {review.length ? (
             <div className="mt-4 space-y-2">
@@ -398,7 +474,15 @@ export default function FlagIt() {
                 </div>
               ))}
               <div className="flex gap-2">
-                <Button variant="ghost" className="flex-1" onClick={() => setReview([])}>
+                <Button
+                  variant="ghost"
+                  className="flex-1"
+                  onClick={async () => {
+                    if (activeJob) await discardImport(activeJob.id)
+                    loadedFor.current = null
+                    setReview([])
+                  }}
+                >
                   Discard
                 </Button>
                 <Button className="flex-[2]" onClick={commit} loading={busy === 'commit'}>
@@ -407,8 +491,40 @@ export default function FlagIt() {
               </div>
             </div>
           ) : null}
+          {history.length && !review.length ? (
+            <div className="mt-4">
+              <p className="label">Recent imports</p>
+              {history.map((j) => (
+                <p key={j.id} className="flex justify-between gap-2 py-0.5 text-[11px] text-muted">
+                  <span className="truncate">{j.fileName}</span>
+                  <span className="shrink-0">
+                    {j.importedCount} added · {relativeTime(j.finishedAt ?? j.createdAt)}
+                  </span>
+                </p>
+              ))}
+            </div>
+          ) : null}
         </Card>
       ) : null}
+
+      <Confirm
+        open={Boolean(reimport)}
+        title="You've imported this file before"
+        body={
+          reimport
+            ? `${reimport.job.fileName} was imported ${relativeTime(reimport.job.finishedAt ?? reimport.job.createdAt)} (${reimport.job.importedCount ?? reimport.job.count} transactions). Reading it again will likely create duplicates — they'd be flagged for review, nothing is removed automatically.`
+            : ''
+        }
+        confirmLabel="Read it again"
+        tone="primary"
+        onConfirm={async () => {
+          if (!reimport) return
+          const file = reimport.file
+          setReimport(null)
+          await queue(file, true)
+        }}
+        onClose={() => setReimport(null)}
+      />
     </div>
   )
 }
