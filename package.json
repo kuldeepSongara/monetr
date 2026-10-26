@@ -4,14 +4,15 @@
   "version": "1.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && tsc -p tsconfig.api.json && vite build",
+    "dev": "node scripts/copy-ocr-assets.mjs && vite",
+    "build": "node scripts/copy-ocr-assets.mjs && tsc -b && tsc -p tsconfig.api.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc -p tsconfig.api.json",
     "icons": "node scripts/make-icons.mjs",
     "serve": "node .tooling/node/bin/node scripts/serve-dist.mjs",
     "build:static": "npm run build && node -e \"require('fs').writeFileSync('dist/README.txt','Open index.html in a modern browser, or serve this folder with any static server.\\\\n\\\\nFor Android APK: use PWA Builder (https://www.pwabuilder.com/) pointing to your hosted URL, or use PWABuilder CLI.\\\\n\\\\nNo backend/server required. All data stays in your browser.')\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "ocr-assets": "node scripts/copy-ocr-assets.mjs"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",
@@ -23,9 +24,11 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
-    "recharts": "^2.12.7"
+    "recharts": "^2.12.7",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
     "@types/node": "^20.19.43",
     "@types/pako": "^2.0.4",
     "@types/qrcode": "^1.5.6",

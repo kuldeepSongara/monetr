@@ -34,7 +34,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../store'
 import type { AIProfile, Category, CategoryKind, ProviderId, ThemeMode, WidgetId } from '../types'
-import { FREE_BACKUPS, PROVIDERS, PROVIDER_ORDER, canUseProfile, createProfile, profileLabel } from '../ai/providers'
+import { FREE_BACKUPS, PROVIDERS, PROVIDER_ORDER, canUseProfile, createProfile, modelSeesImages, profileLabel } from '../ai/providers'
 import { testProfile, type TestResult } from '../ai/client'
 import {
   changeBaseCurrency,
@@ -604,6 +604,7 @@ export function Settings() {
                       {!profile.enabled ? <Badge>off</Badge> : null}
                       {profile.enabled && !canUseProfile(profile) ? <Badge tone="warn">needs key</Badge> : null}
                       <HealthBadge profile={profile} />
+                      <VisionBadge profile={profile} />
                     </div>
                     <p className="mt-0.5 truncate text-[10px] text-muted">
                       {def?.short ?? profile.provider} · {profile.model || 'no model'} · priority {index + 1}
@@ -1345,6 +1346,22 @@ export function Settings() {
         loading={confirmBusy}
       />
     </div>
+  )
+}
+
+function VisionBadge({ profile }: { profile: AIProfile }) {
+  if (modelSeesImages(profile)) return <Badge tone="good">reads images</Badge>
+  const vm = PROVIDERS[profile.provider]?.visionModel
+  if (vm)
+    return (
+      <span title={`Screenshots use ${vm} on the same key`}>
+        <Badge>images via {vm.split('/').pop()?.split('-').slice(0, 3).join('-')}</Badge>
+      </span>
+    )
+  return (
+    <span title="Screenshots are read as text on your device first, then sent to this profile">
+      <Badge>text only · screenshots via on-device OCR</Badge>
+    </span>
   )
 }
 

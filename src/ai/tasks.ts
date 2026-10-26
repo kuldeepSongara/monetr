@@ -3,6 +3,9 @@ import type { SpendContext } from './aiContext'
 import { extractJson } from '../lib/utils'
 import { todayISO } from '../lib/dates'
 import { callAI, type AICallOptions, type AIResult } from './client'
+import { canUseProfile, supportsVision } from './providers'
+import { db } from '../db/db'
+import { ocrImage } from '../lib/ocr'
 import { minorFactor } from '../lib/money'
 
 export interface QuickAddDraft {
@@ -38,6 +41,8 @@ const JSON_SYSTEM =
   'You output only a single valid JSON object. No markdown, no code fences, no commentary. Use exactly the requested keys and value types.'
 
 async function aiJson<T>(opts: Omit<AICallOptions, 'task'>, task: string): Promise<{ data: T; result: AIResult }> {
+  // One shared deadline for the call and its JSON-repair follow-up.
+  if (opts.budgetMs && !opts.deadline) opts = { ...opts, deadline: Date.now() + opts.budgetMs }
   const result = await callAI({ ...opts, task, json: true })
   let data = extractJson<T>(result.text)
   if (data === null) {
@@ -47,6 +52,10 @@ async function aiJson<T>(opts: Omit<AICallOptions, 'task'>, task: string): Promi
       prompt: `Rewrite the following into one valid JSON object with the same meaning. Output JSON only.\n\n${result.text.slice(0, 6000)}`,
       json: true,
       maxTokens: 2000,
+      fast: true,
+      signal: opts.signal,
+      deadline: opts.deadline,
+      budgetMs: opts.budgetMs,
     })
     data = extractJson<T>(repair.text)
   }
@@ -90,7 +99,7 @@ ${categoryList(categories)}
 Return JSON exactly like:
 {"type":"expense","amount":4.5,"currency":"${baseCurrency}","date":"${todayISO()}","merchant":"Blue Bottle","categoryId":"cat_dining","note":""}`
 
-  const { data, result } = await aiJson<QuickAddDraft>({ prompt, system: JSON_SYSTEM, maxTokens: 400 }, 'quick-add')
+  const { data, result } = await aiJson<QuickAddDraft>({ prompt, system: JSON_SYSTEM, maxTokens: 400, fast: true, budgetMs: 30_000 }, 'quick-add')
   const allowed = new Set(categories.map((c) => c.id))
   const draft: QuickAddDraft = {
     type: data.type === 'income' ? 'income' : 'expense',
@@ -266,16 +275,31 @@ ${categoryList(categories, ['expense'])}
 Return JSON:
 {"merchant":"Store","total":23.4,"currency":"${baseCurrency}","date":"${todayISO()}","categoryId":"cat_groceries","items":[{"name":"Milk","amount":3.2}]}`
 
-  const { data, result } = await aiJson<ReceiptDraft>(
-    {
-      prompt,
-      system: JSON_SYSTEM,
-      images: [imageDataUrl],
-      maxTokens: 1200,
-      temperature: 0,
-    },
-    'receipt',
-  )
+  const fallback = await textOnlyProfilesReady()
+  let got: { data: ReceiptDraft; result: AIResult }
+  try {
+    got = await aiJson<ReceiptDraft>(
+      { prompt, system: JSON_SYSTEM, images: [imageDataUrl], maxTokens: 1200, temperature: 0, fast: true, budgetMs: fallback ? 40_000 : 60_000 },
+      'receipt',
+    )
+  } catch (err) {
+    if (!fallback) throw err
+    // No image-capable profile answered: read the receipt text on the device, let a text-only profile parse it.
+    const text = await ocrImage(imageDataUrl)
+    if (text.replace(/\s/g, '').length < 10) throw err
+    got = await aiJson<ReceiptDraft>(
+      {
+        prompt: `${prompt.replace('from this receipt photo', 'from this receipt text (read by OCR — may contain recognition errors)')}\n\nReceipt text:\n${text.slice(0, 8000)}`,
+        system: JSON_SYSTEM,
+        maxTokens: 1200,
+        temperature: 0,
+        fast: true,
+        budgetMs: 40_000,
+      },
+      'receipt-ocr',
+    )
+  }
+  const { data, result } = got
 
   const allowed = new Set(categories.map((c) => c.id))
   const total = Math.abs(Number(data.total) || 0)
@@ -312,10 +336,49 @@ export interface StatementLine {
 export type StatementSource = { kind: 'image'; dataUrl: string } | { kind: 'pdf'; dataUrl: string } | { kind: 'text'; text: string }
 
 /** Pull transactions out of a statement screenshot, PDF, CSV or pasted text. */
+/** Profiles that are ready but can't see images — they can still help via on-device OCR. */
+async function textOnlyProfilesReady(): Promise<boolean> {
+  const all = await db.profiles.toArray()
+  return all.some((p) => canUseProfile(p) && !supportsVision(p))
+}
+
+/**
+ * Read a statement. For screenshots: first the image-capable profiles; if none can (or all are
+ * overloaded) and you have a text-only profile, read the text on the device and let that profile
+ * parse it — so one working profile is always enough.
+ */
 export async function extractStatement(
   source: StatementSource,
   categories: Category[],
   baseCurrency: string,
+  signal?: AbortSignal,
+): Promise<{ lines: StatementLine[]; result: AIResult; viaOcr?: boolean }> {
+  if (source.kind !== 'image') return extractStatementOnce(source, categories, baseCurrency, signal, 150_000)
+  const fallback = await textOnlyProfilesReady()
+  try {
+    // Leave time for the OCR route when there's a text-only profile to fall back on.
+    return await extractStatementOnce(source, categories, baseCurrency, signal, fallback ? 90_000 : 150_000)
+  } catch (err) {
+    if (!fallback || signal?.aborted) throw err
+    const visionError = err instanceof Error ? err.message : String(err)
+    let text: string
+    try {
+      text = await ocrImage(source.dataUrl, signal)
+    } catch (ocrErr) {
+      throw new Error(`Image-capable profiles failed (${visionError}), and ${ocrErr instanceof Error ? ocrErr.message : 'on-device text reading failed'}`)
+    }
+    if (text.replace(/\s/g, '').length < 20) throw new Error(`Couldn't read text from that image on the device, and the image-capable AI failed: ${err instanceof Error ? err.message : err}`)
+    const res = await extractStatementOnce({ kind: 'text', text: `(Text read from a screenshot by OCR — may contain recognition errors; columns may be run together.)\n${text}` }, categories, baseCurrency, signal, 90_000)
+    return { ...res, viaOcr: true }
+  }
+}
+
+async function extractStatementOnce(
+  source: StatementSource,
+  categories: Category[],
+  baseCurrency: string,
+  signal: AbortSignal | undefined,
+  budgetMs: number,
 ): Promise<{ lines: StatementLine[]; result: AIResult }> {
   const year = todayISO().slice(0, 4)
   const prompt = `Extract every transaction from this bank or credit card statement.
@@ -327,8 +390,10 @@ Rules:
 - type: "expense" for purchases/charges/debits, "refund" for merchant refunds/returns/reversals, "income" for salary or other deposits, "transfer" for card payments, payments received on a credit card, or moves between the person's own accounts.
 - date: YYYY-MM-DD. If the statement omits the year, use ${year} unless that would put the date in the future, then use the previous year.
 - currency: ISO code shown for that line, else the statement currency, else ${baseCurrency}.
-- merchant: a short clean name ("Starbucks", not "STARBUCKS #0423 TORONTO ON").
+- merchant: the business you paid, as a short clean name ("Best Buy", not "BEST BUY #977 BBY STORE TORONTO"). If the description names the actual business and another column shows the platform (e.g. description "Masala guys", merchant column "UBER EATS"), use the business and mention the platform in the note.
+- note: keep any extra context from the line — item details in brackets like "(MacBook Air m5 base model)", the delivery platform ("via Uber Eats"), what an abbreviation means. Empty string if nothing useful. Don't put the city there.
 - categoryId: one of the ids below matching the type (refunds use the expense category of what was refunded).
+- On a credit card statement positive amounts are purchases, and negative ones are payments to the card (type "transfer") or refunds (type "refund"). Use the transaction date, not the posting/processed date.
 - confidence: 0-1, how sure you are this line is a real transaction read correctly.
 - Skip balances, totals, interest summaries and headers.
 
@@ -352,7 +417,11 @@ Return JSON exactly like:
       pdfs: source.kind === 'pdf' ? [source.dataUrl] : undefined,
       maxTokens: 8000,
       temperature: 0,
-      timeoutMs: 120_000,
+      // Fast mode (no "thinking") and a hard 150s cap for the whole read, retries and backups included.
+      fast: true,
+      timeoutMs: 75_000,
+      budgetMs,
+      signal,
     },
     'statement-import',
   )

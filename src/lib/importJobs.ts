@@ -20,6 +20,16 @@ import { uid } from './utils'
 const listeners = new Set<(jobs: ImportRecord[]) => void>()
 let cache: ImportRecord[] = []
 let running = false
+const controllers = new Map<string, AbortController>()
+
+/** Stop a read that's taking too long (or was started by mistake). */
+export async function cancelImport(id: string): Promise<void> {
+  controllers.get(id)?.abort()
+  const cur = await db.imports.get(id)
+  if (cur && (cur.status === 'queued' || cur.status === 'processing')) {
+    await patch(id, { status: 'failed', error: 'Cancelled. Retry any time — the file is kept.', finishedAt: new Date().toISOString() })
+  }
+}
 
 async function reload(): Promise<ImportRecord[]> {
   const all = await db.imports.orderBy('createdAt').reverse().toArray()
@@ -149,6 +159,8 @@ async function pump(): Promise<void> {
 
 async function process(job: ImportRecord): Promise<void> {
   await patch(job.id, { status: 'processing', startedAt: new Date().toISOString(), error: undefined })
+  const controller = new AbortController()
+  controllers.set(job.id, controller)
   try {
     if (!job.source) throw new Error('The original file is no longer stored — upload it again.')
     const [settings, categories, rules, transactions, profiles, currencyProfiles] = await Promise.all([
@@ -169,9 +181,9 @@ async function process(job: ImportRecord): Promise<void> {
     let readBy = 'device'
     let raw = local
     if (!raw) {
-      const res = await extractStatement(source, categories.filter((c) => !c.archived), base)
+      const res = await extractStatement(source, categories.filter((c) => !c.archived), base, controller.signal)
       raw = res.lines
-      readBy = `${res.result.profileName} · ${res.result.model}`
+      readBy = `${res.viaOcr ? 'text read on device + ' : ''}${res.result.profileName} · ${res.result.model}`
     }
     if (!raw.length) throw new Error('No transactions found in that file.')
     const lines: ImportLine[] = raw.map((l) => {
@@ -190,10 +202,13 @@ async function process(job: ImportRecord): Promise<void> {
     const rates = Object.fromEntries(foreign.map((c) => [c, String(suggestedFxRate(c, base, transactions, currencyProfiles) ?? '')]))
     await patch(job.id, { status: 'review', lines, rates, count: lines.length, readBy, finishedAt: new Date().toISOString() })
   } catch (err) {
+    if (controller.signal.aborted) return // cancelImport already recorded it
     await patch(job.id, {
       status: 'failed',
-      error: err instanceof Error ? err.message : 'Could not read that file',
+      error: err instanceof Error ? err.message : `Could not read that file (${String((err as { message?: string })?.message ?? err)})`,
       finishedAt: new Date().toISOString(),
     })
+  } finally {
+    controllers.delete(job.id)
   }
 }

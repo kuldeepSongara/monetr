@@ -16,7 +16,12 @@ export interface ProviderDef {
   freeTier?: string
   keyUrl?: string
   keyHint?: string
+  /** Every model on this provider reads images (Gemini, OpenAI, Claude). */
   supportsVision: boolean
+  /** Provider hosts many models: whether images work depends on the model chosen. */
+  visionDependsOnModel?: boolean
+  /** An image-capable model to switch to (same key) when the chosen one is text-only. */
+  visionModel?: string
   requiresKey: boolean
   notes?: string
 }
@@ -79,10 +84,11 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     ],
     defaultModel: 'meta-llama/llama-3.3-70b-instruct:free',
     fallbackModels: ['openai/gpt-oss-120b:free'],
-    freeTier: 'Models ending in :free cost nothing — about 20 requests/min and 50/day (1,000/day after a one-time $10 top-up).',
+    freeTier: 'Models ending in :free cost nothing — about 20 requests/min and 50/day (1,000/day after a one-time $10 top-up). For screenshots pick an image-capable model (e.g. one with “vision”, Llama 4, Gemma 3 or Gemini in its name).',
+    visionDependsOnModel: true,
     keyUrl: 'https://openrouter.ai/keys',
     keyHint: 'Starts with sk-or-…',
-    supportsVision: true,
+    supportsVision: false,
     requiresKey: true,
     notes: 'One key, many models. Handy as a failover.',
   },
@@ -95,7 +101,8 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'meta-llama/llama-4-scout-17b-16e-instruct', 'llama-3.1-8b-instant'],
     defaultModel: 'llama-3.3-70b-versatile',
     fallbackModels: ['openai/gpt-oss-120b', 'llama-3.1-8b-instant'],
-    freeTier: 'Free key, very fast, generous daily limits. Llama 4 Scout can read images.',
+    freeTier: 'Free key, very fast, generous daily limits. Screenshots automatically use Llama 4 Scout (reads images) on the same key.',
+    visionModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
     keyUrl: 'https://console.groq.com/keys',
     keyHint: 'Starts with gsk_…',
     supportsVision: false,
@@ -122,6 +129,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     models: ['mistral-small-latest', 'mistral-large-latest', 'open-mistral-nemo'],
     defaultModel: 'mistral-small-latest',
     freeTier: 'Free “Experiment” plan, but it lets Mistral train on your prompts — think twice with financial data.',
+    visionModel: 'pixtral-12b-2409',
     keyUrl: 'https://console.mistral.ai/api-keys',
     supportsVision: false,
     requiresKey: true,
@@ -183,7 +191,8 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     baseUrl: 'http://localhost:8080/v1',
     models: [],
     defaultModel: 'llama-3.1-8b-instruct',
-    supportsVision: true,
+    supportsVision: false,
+    visionDependsOnModel: true,
     requiresKey: false,
     notes: 'LM Studio, vLLM, LiteLLM, a proxy… any /chat/completions endpoint.',
   },
@@ -235,10 +244,27 @@ export function canUseProfile(profile: AIProfile): boolean {
   return true
 }
 
+const VISION_MODEL = /llama-4|vision|-vl\b|vl-|pixtral|gemini|gemma-3|gpt-4o|gpt-4\.1|gpt-5|claude|qwen2\.5-vl|qwen-vl|llava|mistral-small-3\.[12]|mistral-medium/i
+
+/** Can this exact model read images? */
+export function modelSeesImages(profile: AIProfile, model = profile.model): boolean {
+  const def = PROVIDERS[profile.provider]
+  if (def?.supportsVision) return true
+  return VISION_MODEL.test(model)
+}
+
+/** Can this profile read images — with its own model, a backup model, or the provider's vision model? */
 export function supportsVision(profile: AIProfile): boolean {
-  if (PROVIDERS[profile.provider]?.supportsVision) return true
-  // Some otherwise text-only providers host a vision model.
-  return /llama-4|vision|-vl\b|pixtral/i.test(profile.model)
+  if (modelSeesImages(profile)) return true
+  if ((profile.fallbackModels ?? []).some((m) => modelSeesImages(profile, m))) return true
+  return Boolean(PROVIDERS[profile.provider]?.visionModel)
+}
+
+/** Why a ready profile can't take this request, or null. */
+export function capabilityGap(profile: AIProfile, needs: { images?: boolean; pdfs?: boolean }): string | null {
+  if (needs.pdfs && !supportsPdf(profile)) return "can't read PDFs"
+  if (needs.images && !supportsVision(profile)) return `text-only model (${profile.model}) can't see images`
+  return null
 }
 
 /** Free backups worth adding next to Gemini, in order of usefulness. */

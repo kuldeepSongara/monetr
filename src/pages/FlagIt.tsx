@@ -11,7 +11,7 @@ import { CURRENCIES, formatMoney, minorFactor, toMinor } from '../lib/money'
 import { computeHolding, portfolioTotals } from '../lib/investments'
 import { findDuplicate, suggestedFxRate } from '../lib/suggest'
 import { pickFiles, uid } from '../lib/utils'
-import { discardImport, markImported, retryImport, saveReview, startImport } from '../lib/importJobs'
+import { cancelImport, discardImport, markImported, retryImport, saveReview, startImport } from '../lib/importJobs'
 import { useImports } from '../components/ImportStatus'
 import { useSearchParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Field, Input, Markdown, SectionTitle, Select, cn } from '../components/ui'
@@ -156,6 +156,13 @@ export default function FlagIt() {
   const runningJobs = jobs.filter((j) => j.status === 'queued' || j.status === 'processing')
   const problemJobs = jobs.filter((j) => j.status === 'failed' || j.status === 'interrupted')
   const history = jobs.filter((j) => j.status === 'imported').slice(0, 5)
+  // Tick once a second while something is being read, so the elapsed time is live.
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!runningJobs.length) return
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [runningJobs.length])
 
   // Load the selected job's lines into the editable review (once per job).
   const loadedFor = useRef<string | null>(null)
@@ -366,7 +373,12 @@ export default function FlagIt() {
                 <div key={j.id} className="flex items-center gap-2 rounded-xl border border-accent/30 bg-accent/[0.05] px-3 py-2 text-[11px]">
                   <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
                   <span className="min-w-0 flex-1 truncate text-ink">{j.fileName}</span>
-                  <span className="shrink-0 text-muted">{j.status === 'queued' ? 'waiting its turn' : `reading · ${relativeTime(j.startedAt ?? j.createdAt)}`}</span>
+                  <span className="shrink-0 text-muted">
+                    {j.status === 'queued' ? 'waiting its turn' : `reading · ${Math.max(0, Math.round((now - Date.parse(j.startedAt ?? j.createdAt)) / 1000))}s`}
+                  </span>
+                  <Button size="sm" variant="plain" className="px-1.5 text-muted" onClick={() => cancelImport(j.id)}>
+                    Cancel
+                  </Button>
                 </div>
               ))}
               {problemJobs.map((j) => (
@@ -407,6 +419,7 @@ export default function FlagIt() {
               <div className="flex items-center justify-between text-[11px] text-muted">
                 <span>
                   {fileName} · {review.filter((r) => r.include).length} of {review.length} selected
+                  {activeJob?.readBy ? <span className="block text-[10px]">Read by {activeJob.readBy === 'device' ? 'this device (no AI)' : activeJob.readBy}</span> : null}
                 </span>
                 <button type="button" className="underline underline-offset-2" onClick={() => setReview((rows) => rows.map((r) => ({ ...r, include: !rows.every((x) => x.include) })))}>
                   Toggle all
@@ -465,6 +478,12 @@ export default function FlagIt() {
                       ))}
                     </Select>
                   </div>
+                  <Input
+                    className="mt-1.5 h-8 py-1 text-[11px]"
+                    value={r.note ?? ''}
+                    onChange={(e) => updateRow(r.key, { note: e.target.value })}
+                    placeholder="Note / context (optional) — e.g. what it was for"
+                  />
                   {r.duplicateOf || r.confidence < 0.5 ? (
                     <p className="mt-1 text-[10px] font-medium text-warn">
                       {r.duplicateOf ? 'Looks like it is already recorded. ' : ''}

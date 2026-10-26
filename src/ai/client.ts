@@ -1,7 +1,7 @@
 import type { AIAttempt, AIProfile, ProfileHealth, Settings } from '../types'
 import { nowISO } from '../lib/dates'
 import { db, logAI, setMeta, setProfileHealth, updateSettings } from '../db/db'
-import { PROVIDERS, canUseProfile, profileLabel, supportsPdf, supportsVision } from './providers'
+import { PROVIDERS, canUseProfile, capabilityGap, modelSeesImages, profileLabel } from './providers'
 
 export interface AICallOptions {
   prompt: string
@@ -15,7 +15,13 @@ export interface AICallOptions {
   temperature?: number
   task: string
   timeoutMs?: number
+  /** Hard cap for the whole call: every retry, backup model and failover profile together. */
+  budgetMs?: number
+  /** Skip the model's "thinking" step (Gemini 2.5 Flash) — much faster for plain extraction. */
+  fast?: boolean
   signal?: AbortSignal
+  /** Internal: absolute deadline derived from budgetMs. */
+  deadline?: number
 }
 
 export interface AIResult {
@@ -30,10 +36,12 @@ export interface AIResult {
 
 export class AIError extends Error {
   attempts: AIAttempt[]
-  constructor(message: string, attempts: AIAttempt[] = []) {
+  code?: 'no-capable-profile' | 'all-failed' | 'timeout'
+  constructor(message: string, attempts: AIAttempt[] = [], code?: AIError['code']) {
     super(message)
     this.name = 'AIError'
     this.attempts = attempts
+    this.code = code
   }
 }
 
@@ -186,6 +194,8 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
   const temp = opts.temperature ?? profile.temperature
   if (temp !== undefined) genConfig.temperature = temp
   if (opts.json) genConfig.responseMimeType = 'application/json'
+  // Flash models "think" before answering by default; for reading a table that's just latency.
+  if (opts.fast && /flash/i.test(profile.model) && !/2\.0|1\.5/.test(profile.model)) genConfig.thinkingConfig = { thinkingBudget: 0 }
   if (Object.keys(genConfig).length) body.generationConfig = genConfig
 
   if (opts.system?.trim()) {
@@ -324,7 +334,12 @@ async function callProvider(profile: AIProfile, opts: AICallOptions): Promise<st
   if (!profile.model?.trim()) throw new Error('No model selected for this profile')
   if (def.requiresKey && !profile.apiKey?.trim()) throw new Error('Missing API key')
 
-  const timeoutMs = opts.timeoutMs ?? (opts.images?.length || opts.pdfs?.length ? 90_000 : 60_000)
+  let timeoutMs = opts.timeoutMs ?? (opts.images?.length || opts.pdfs?.length ? 90_000 : 60_000)
+  if (opts.deadline) {
+    const left = opts.deadline - Date.now()
+    if (left < 3000) throw new BudgetError()
+    timeoutMs = Math.min(timeoutMs, left)
+  }
   if (def.kind === 'google') return callGoogle(profile, opts, timeoutMs)
   if (def.kind === 'anthropic') return callAnthropic(profile, opts, timeoutMs)
   return callOpenAI(profile, opts, timeoutMs)
@@ -335,8 +350,19 @@ async function callProvider(profile: AIProfile, opts: AICallOptions): Promise<st
  * backoff, then walk the profile's backup models (same key — free quotas are per model) before the
  * caller fails over to the next profile.
  */
+class BudgetError extends Error {
+  constructor() {
+    super('Took too long — the AI provider is very slow right now.')
+  }
+}
+
 async function callWithRecovery(profile: AIProfile, opts: AICallOptions): Promise<{ text: string; model: string }> {
-  const models = [profile.model, ...(profile.fallbackModels ?? [])].map((m) => m.trim()).filter(Boolean)
+  let models = [profile.model, ...(profile.fallbackModels ?? [])].map((m) => m.trim()).filter(Boolean)
+  if (opts.images?.length) {
+    // Images: only image-capable models, plus the provider's vision model on the same key (e.g. Groq → Llama 4 Scout).
+    const visionModel = PROVIDERS[profile.provider]?.visionModel
+    models = [...models.filter((m) => modelSeesImages(profile, m)), ...(visionModel ? [visionModel] : [])]
+  }
   const unique = [...new Set(models)]
   let lastErr: unknown = new Error('No model configured')
   for (const model of unique) {
@@ -346,9 +372,11 @@ async function callWithRecovery(profile: AIProfile, opts: AICallOptions): Promis
         return { text: await callProvider(p, opts), model }
       } catch (err) {
         lastErr = err
-        if (opts.signal?.aborted) throw err
+        if (opts.signal?.aborted || err instanceof BudgetError) throw err
         if (isModelProblem(err)) break
         if (!isTransient(err)) throw err
+        // A timeout means this model is slow right now — waiting again on it just doubles the wait.
+        if (err instanceof HttpError && err.status === 408) break
         if (attempt < 2) {
           const hinted = err instanceof HttpError ? err.retryAfterMs : undefined
           await sleep(Math.min(8000, hinted ?? 1200 * 2 ** attempt + Math.random() * 400), opts.signal)
@@ -373,19 +401,34 @@ async function recordHealth(profile: AIProfile, health: ProfileHealth): Promise<
  * which profile is actually serving requests.
  */
 export async function callAI(opts: AICallOptions): Promise<AIResult> {
+  if (opts.budgetMs && !opts.deadline) opts = { ...opts, deadline: Date.now() + opts.budgetMs }
   const [settings, all] = await Promise.all([db.settings.get('settings'), db.profiles.toArray()])
-  const ready = all.filter(canUseProfile).sort((a, b) => a.priority - b.priority)
+  const sorted = [...all].sort((a, b) => a.priority - b.priority)
+  // Explain every profile that won't be tried, so "all profiles failed" is never a mystery.
+  const skipped: string[] = []
+  for (const p of sorted) {
+    if (!p.enabled) skipped.push(`${profileLabel(p)}: turned off`)
+    else if (!canUseProfile(p)) skipped.push(`${profileLabel(p)}: missing key or model`)
+  }
+  const ready = sorted.filter(canUseProfile)
   if (!ready.length) {
     throw new AIError('No AI profile is ready. Add a key in Settings → AI profiles.')
   }
   // Only route image / PDF requests to profiles that can read them, so failover doesn't waste a
   // call (and a cooldown) on a text-only model.
-  const usable = ready.filter((p) => (!opts.images?.length || supportsVision(p)) && (!opts.pdfs?.length || supportsPdf(p)))
+  const needs = { images: Boolean(opts.images?.length), pdfs: Boolean(opts.pdfs?.length) }
+  const usable = ready.filter((p) => {
+    const gap = capabilityGap(p, needs)
+    if (gap) skipped.push(`${profileLabel(p)}: ${gap}`)
+    return !gap
+  })
   if (!usable.length) {
     throw new AIError(
       opts.pdfs?.length
-        ? 'Reading PDFs needs a Gemini, Claude or OpenAI profile. Add one, or upload a screenshot / CSV instead.'
-        : 'Reading images needs a vision-capable profile (Gemini, OpenAI, Claude or OpenRouter).',
+        ? `Reading PDFs needs a Gemini, Claude or OpenAI profile. (${skipped.join(' · ')})`
+        : `None of your profiles can see images. (${skipped.join(' · ')})`,
+      [],
+      'no-capable-profile',
     )
   }
 
@@ -400,6 +443,7 @@ export async function callAI(opts: AICallOptions): Promise<AIResult> {
   const attempts: AIAttempt[] = []
   for (let i = 0; i < queue.length; i++) {
     if (opts.signal?.aborted) throw new AIError('Cancelled', attempts)
+    if (opts.deadline && opts.deadline - Date.now() < 3000) break
     const profile = queue[i]
     const started = performance.now()
     try {
@@ -475,11 +519,18 @@ export async function callAI(opts: AICallOptions): Promise<AIResult> {
   }
 
   const summary = attempts.map((a) => `${a.profileName}: ${a.error}`).join(' · ')
+  const skippedNote = skipped.length ? ` Not tried — ${skipped.join(' · ')}.` : ''
+  if (opts.deadline && opts.deadline - Date.now() < 3000) {
+    throw new AIError(
+      `Gave up after ${Math.round((opts.budgetMs ?? 0) / 1000) || 'a while'}s — the AI provider is too slow right now. Try again in a minute, or add a free backup profile (Settings → AI profiles).${summary ? ` (${summary})` : ''}${skippedNote}`,
+      attempts,
+      'timeout',
+    )
+  }
   throw new AIError(
-    queue.length > 1
-      ? `All ${queue.length} AI profiles failed. ${summary}`
-      : `AI request failed. ${summary}`,
+    `${queue.length > 1 ? `All ${queue.length} AI profiles that can handle this failed` : 'AI request failed'}. ${summary}.${skippedNote}`,
     attempts,
+    'all-failed',
   )
 }
 
