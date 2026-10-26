@@ -154,6 +154,8 @@ export interface Txn {
   refundOf?: string
   /** Transactions you confirmed are separate real payments, not duplicates of this one. */
   notDuplicateOf?: string[]
+  /** Paid from a savings pot: counted in history and charts, but not against the cycle budget. */
+  potId?: string
   createdAt: string
   updatedAt: string
 }
@@ -223,11 +225,43 @@ export interface BillPayment {
 
 export interface Budget {
   id: string
-  /** Category id or `all` for the whole budget. */
+  /** Category id, `all` for the whole budget, or `group` for a budget shared by `categoryIds`. */
   categoryId: string
+  /** Group budgets only: the categories that share this limit (e.g. Shopping + Dining). */
+  categoryIds?: string[]
+  /** Group budgets only. */
+  name?: string
+  emoji?: string
   amount: number
   rollover: boolean
   period: 'cycle' | 'weekly'
+  archived?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * A savings pot for one-time purchases (laptop, phone…).
+ * `save`: set money aside each pay cycle before buying. `payback`: you already bought it, and the
+ * pot starts below zero and is filled back from future cycles. Either way the purchase is paid
+ * from the pot instead of the budget of the cycle it landed in, and the pot's per-cycle amount is
+ * held back from safe-to-spend.
+ */
+export interface Pot {
+  id: string
+  name: string
+  emoji?: string
+  kind: 'save' | 'payback'
+  /** Save pots: the goal, base minor units. Payback pots: 0 (the goal is what was spent). */
+  target: number
+  /** Set aside each pay cycle, base minor units. */
+  perCycle: number
+  /** Setting aside starts in the pay cycle that contains this date. */
+  startDate: ISODate
+  /** Already set aside before `startDate` (kept when the per-cycle amount is changed later). */
+  carried?: number
+  /** Save pots: when you want to buy. */
+  targetDate?: ISODate
   archived?: boolean
   createdAt: string
   updatedAt: string
@@ -482,5 +516,6 @@ export interface BackupFile {
     investmentTransfers?: InvestmentTransfer[]
     flags?: FlagEntry[]
     flagIdeas?: FlagIdea[]
+    pots?: Pot[]
   }
 }

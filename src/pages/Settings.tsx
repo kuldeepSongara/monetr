@@ -665,7 +665,7 @@ export function Settings() {
                     aria-label="Enable profile"
                   >
                     <span
-                      className="absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all"
+                      className={cn('absolute top-0.5 h-3.5 w-3.5 rounded-full shadow transition-all', profile.enabled ? 'bg-accent-fg' : 'bg-white ring-1 ring-line')}
                       style={{ left: profile.enabled ? 18 : 2 }}
                     />
                   </button>
@@ -781,7 +781,7 @@ export function Settings() {
                   aria-label={`Accent ${hex}`}
                   className={cn(
                     'h-8 w-8 rounded-full border-2 transition',
-                    settings.accent === hex ? 'scale-105 border-ink' : 'border-transparent',
+                    settings.accent === hex ? 'scale-105 border-ink ring-2 ring-surface ring-offset-0' : 'border-line',
                   )}
                   style={{ background: hex }}
                 />
@@ -819,7 +819,7 @@ export function Settings() {
                       onClick={() => toggleWidget(widget.id)}
                       className={cn(
                         'flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-md border',
-                        visible ? 'border-accent bg-accent text-white' : 'border-line bg-surface',
+                        visible ? 'border-accent bg-accent text-accent-fg' : 'border-line bg-surface',
                       )}
                       aria-label={`Show ${widget.label}`}
                     >

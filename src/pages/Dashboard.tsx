@@ -18,6 +18,7 @@ import type { EditorSeed } from '../components/TransactionEditor'
 import { TransactionEditor } from '../components/TransactionEditor'
 import { QuickAddBar } from '../components/QuickAddBar'
 import { CategoryDonut, SpendTrendChart } from '../components/charts'
+import { ShareCharts } from '../components/ShareCharts'
 import { Badge, Button, Card, EmptyState, ProgressBar, SectionTitle, cn } from '../components/ui'
 import { addDays, dueLabel, formatDate, shiftPeriod } from '../lib/dates'
 import { changePct, byCategory, dailySeries, totals, txnRange } from '../lib/analytics'
@@ -121,7 +122,8 @@ export function Dashboard() {
                         </p>
                         <p className="mt-2 text-xs leading-relaxed text-muted">
                           {formatMoney(Math.max(0, safe.discretionary), currency)} left after{' '}
-                          {formatMoney(safe.billsReserved, currency)} of bills · {safe.daysLeft} day
+                          {formatMoney(safe.billsReserved, currency)} of bills
+                          {safe.potsReserved ? ` and ${formatMoney(safe.potsReserved, currency)} for savings pots` : ''} · {safe.daysLeft} day
                           {safe.daysLeft === 1 ? '' : 's'} to go
                         </p>
                       </>
@@ -268,7 +270,10 @@ export function Dashboard() {
             <Card className="flex w-full flex-col">
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-[13px] font-semibold text-ink">Where it went</p>
-                <Badge tone="neutral">{formatDate(range.start, 'short')}–{formatDate(range.end, 'short')}</Badge>
+                <div className="flex items-center gap-1.5">
+                  <Badge tone="neutral">{formatDate(range.start, 'short')}–{formatDate(range.end, 'short')}</Badge>
+                  <ShareCharts variant="ghost" label="" className="!h-7 !px-2" />
+                </div>
               </div>
               {cats.length ? (
                 <CategoryDonut data={cats} total={nowTotals.expense} />
@@ -301,7 +306,7 @@ export function Dashboard() {
                     <div key={row.budget.id}>
                       <div className="mb-1 flex items-baseline justify-between gap-2 text-[11px]">
                         <span className="truncate font-medium text-ink/90">
-                          {row.category ? `${row.category.emoji} ${row.category.name}` : '🎯 Everything'}
+                          {row.emoji} {row.label}
                         </span>
                         <span className="tnum shrink-0 text-muted">
                           {formatMoney(row.spent, currency)} / {formatMoney(row.limit, currency)}

@@ -130,8 +130,8 @@ export function Toggle({
       >
         <span
           className={cn(
-            'absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow transition-all',
-            checked ? 'left-[22px]' : 'left-0.5',
+            'absolute top-0.5 h-4.5 w-4.5 rounded-full shadow transition-all',
+            checked ? 'left-[22px] bg-accent-fg' : 'left-0.5 bg-white ring-1 ring-line',
           )}
           style={{ height: 18, width: 18 }}
         />

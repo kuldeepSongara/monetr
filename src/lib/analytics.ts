@@ -214,7 +214,14 @@ export function changePct(current: number, previous: number): number | null {
 
 export interface BudgetRow {
   budget: Budget
+  /** Single-category budgets only. */
   category?: Category
+  /** Display name, emoji and color — the category's, the group's, or "Everything". */
+  label: string
+  emoji: string
+  color: string
+  /** Group budgets: each member category and what it spent this period, biggest first. */
+  parts?: { category: Category; spent: number }[]
   spent: number
   limit: number
   rollover: number
@@ -234,6 +241,19 @@ export function periodFor(period: 'cycle' | 'weekly', settings: Settings, today:
   return payCycle(today, settings.payCycleStartDay)
 }
 
+/** Categories a budget counts. Empty = everything. */
+export function budgetCategoryIds(b: Budget): string[] {
+  if (b.categoryId === 'all') return []
+  if (b.categoryId === 'group') return b.categoryIds ?? []
+  return [b.categoryId]
+}
+
+/** Does this budget count spending in `categoryId`? */
+export function budgetCovers(b: Budget, categoryId: string): boolean {
+  if (b.categoryId === 'all') return true
+  return budgetCategoryIds(b).includes(categoryId)
+}
+
 export function budgetRows(
   budgets: Budget[],
   txns: Txn[],
@@ -249,19 +269,42 @@ export function budgetRows(
     const range = periodFor(b.period, settings, today)
     const prevRange = shiftPeriod(range, -1, b.period === 'weekly')
     const inPeriod = (t: Txn, r: Range) =>
-      (t.type === 'expense' || t.type === 'refund') && t.date >= r.start && t.date <= r.end && (b.categoryId === 'all' || t.categoryId === b.categoryId)
+      (t.type === 'expense' || t.type === 'refund') && t.date >= r.start && t.date <= r.end && budgetCovers(b, t.categoryId)
 
     const spent = sum(txns.filter((t) => inPeriod(t, range)).map(spendDelta))
     const prevSpent = sum(txns.filter((t) => inPeriod(t, prevRange)).map(spendDelta))
-    const rollover = b.rollover ? Math.min(b.amount, Math.max(0, b.amount - prevSpent)) : 0
+    // Only roll over from a period the budget actually existed in.
+    const existedBefore = !b.createdAt || b.createdAt.slice(0, 10) <= prevRange.end
+    const rollover = b.rollover && existedBefore ? Math.min(b.amount, Math.max(0, b.amount - prevSpent)) : 0
     const limit = b.amount + rollover
     const remaining = limit - spent
     const daysLeft = Math.max(1, daysBetween(today, range.end) + 1)
     const usedPct = limit ? (spent / limit) * 100 : 0
 
+    const isGroup = b.categoryId === 'group'
+    const category = b.categoryId === 'all' || isGroup ? undefined : catMap.get(b.categoryId)
+    let parts: BudgetRow['parts']
+    if (isGroup) {
+      const current = txns.filter((t) => inPeriod(t, range))
+      parts = budgetCategoryIds(b)
+        .map((id) => catMap.get(id))
+        .filter((c): c is Category => Boolean(c))
+        .map((c) => ({ category: c, spent: sum(current.filter((t) => t.categoryId === c.id).map(spendDelta)) }))
+        .sort((x, y) => y.spent - x.spent)
+    }
+    const groupName =
+      budgetCategoryIds(b)
+        .map((id) => catMap.get(id)?.name)
+        .filter(Boolean)
+        .join(' + ') || 'Group'
+
     rows.push({
       budget: b,
-      category: b.categoryId === 'all' ? undefined : catMap.get(b.categoryId),
+      category,
+      label: isGroup ? b.name?.trim() || groupName : category?.name ?? (b.categoryId === 'all' ? 'Everything' : 'Removed category'),
+      emoji: isGroup ? b.emoji || '🧺' : category?.emoji ?? '🎯',
+      color: isGroup ? '#7C5CFF' : category?.color ?? '#7C5CFF',
+      parts,
       spent,
       limit,
       rollover,
@@ -283,6 +326,8 @@ export interface SafeToSpend {
   spent: number
   remainingBudget: number
   billsReserved: number
+  /** Set aside this cycle for savings pots. */
+  potsReserved: number
   discretionary: number
   perDay: number
   daysLeft: number
@@ -298,6 +343,7 @@ export function computeSafeToSpend(
   schedules: Map<string, BillSchedule>,
   settings: Settings,
   today: ISODate = todayISO(),
+  potsReserved = 0,
 ): SafeToSpend {
   const range = payCycle(today, settings.payCycleStartDay)
   const daysLeft = Math.max(1, daysBetween(today, range.end) + 1)
@@ -330,7 +376,7 @@ export function computeSafeToSpend(
 
   const billsReserved = sum(billsDue.map((x) => x.schedule.typicalAmount || x.bill.baseAmount))
   const remainingBudget = limit - spent
-  const discretionary = Math.max(0, remainingBudget - billsReserved)
+  const discretionary = Math.max(0, remainingBudget - billsReserved - potsReserved)
 
   return {
     basis,
@@ -338,6 +384,7 @@ export function computeSafeToSpend(
     spent,
     remainingBudget,
     billsReserved,
+    potsReserved,
     discretionary,
     perDay: Math.round(discretionary / daysLeft),
     daysLeft,

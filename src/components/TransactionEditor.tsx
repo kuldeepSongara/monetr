@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Trash2, Undo2 } from 'lucide-react'
 import { useApp } from '../store'
 import type { CategorySource, Txn, TxnType } from '../types'
-import { addRefund, addTransaction, deleteTransaction, learnRules, updateTransaction } from '../db/db'
+import { addRefund, addTransaction, deleteTransaction, learnRules, savePot, setTxnPot, updateTransaction } from '../db/db'
+import { perCycleFor } from '../lib/pots'
+import { isBigPurchase } from './Pots'
 import { formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor, currencyInfo } from '../lib/money'
 import { ruleCategory, suggestedFxRate } from '../lib/suggest'
@@ -34,7 +36,7 @@ const SOURCE_LABEL: Record<CategorySource, string> = {
 }
 
 export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
-  const { transactions, categories, settings, rules, currencyProfiles, refresh, notify } = useApp()
+  const { transactions, categories, settings, rules, currencyProfiles, potList, safe, refresh, notify } = useApp()
   const existing = useMemo(() => transactions.find((t) => t.id === txnId), [transactions, txnId])
 
   const [type, setType] = useState<TxnType>('expense')
@@ -53,6 +55,9 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
   const [refundNote, setRefundNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  /** '' = counts in this cycle's budget, a pot id, or 'new' for a new pay-back pot. */
+  const [potChoice, setPotChoice] = useState('')
+  const [potMonths, setPotMonths] = useState(6)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -68,8 +73,12 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
       setCategoryId(existing.categoryId)
       setNote(existing.note ?? '')
       setCatSource(existing.categorySource)
+      setPotChoice(existing.potId ?? '')
+      setPotMonths(6)
       return
     }
+    setPotChoice('')
+    setPotMonths(6)
     const t = seed?.type ?? 'expense'
     setType(t)
     setAmount(seed?.amountMajor !== undefined ? String(seed.amountMajor) : '')
@@ -139,10 +148,24 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
         categorySource: catSource === 'default' ? ('manual' as const) : catSource,
         source: existing?.source ?? seed?.source ?? 'manual',
       }
+      let id = existing?.id
       if (existing) {
         await updateTransaction(existing.id, input, settings.currency)
       } else {
-        await addTransaction(input, settings.currency)
+        id = (await addTransaction(input, settings.currency)).id
+      }
+      const wantPot = type === 'expense' ? potChoice : ''
+      if (id && wantPot === 'new') {
+        const potId = await savePot({
+          name: merchant.trim() || 'Pay back',
+          kind: 'payback',
+          target: 0,
+          perCycle: perCycleFor(basePreview, potMonths),
+          startDate: todayISO(),
+        })
+        await setTxnPot([id], potId)
+      } else if (id && wantPot !== (existing?.potId ?? '')) {
+        await setTxnPot([id], wantPot || null)
       }
       // Learn merchant → category whenever you picked (or confirmed) a category yourself.
       if (merchant.trim() && type !== 'transfer' && (catSource === 'manual' || !existing)) {
@@ -323,6 +346,40 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
               ))}
             </div>
           </Field>
+
+          {type === 'expense' && (potList.length || isBigPurchase(basePreview, safe.limit) || existing?.potId) ? (
+            <div className="rounded-xl border border-line/70 bg-surface2/40 p-3">
+              {potChoice === '' && isBigPurchase(basePreview, safe.limit) ? (
+                <p className="mb-2 text-[11px] text-warn">That’s more than half this cycle’s budget. One-time buy? Pay it from a pot instead of this cycle.</p>
+              ) : null}
+              <Field label="Paid from">
+                <Select value={potChoice} onChange={(e) => setPotChoice(e.target.value)}>
+                  <option value="">This cycle’s budget</option>
+                  {potList
+                    .filter((p) => p.state !== 'done' || p.pot.id === existing?.potId)
+                    .map((p) => (
+                      <option key={p.pot.id} value={p.pot.id}>
+                        {p.pot.emoji || (p.pot.kind === 'save' ? '🐷' : '↩️')} {p.pot.name}
+                      </option>
+                    ))}
+                  <option value="new">＋ New pay-back pot…</option>
+                </Select>
+              </Field>
+              {potChoice === 'new' ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-muted">Pay back over</span>
+                  {[3, 6, 12].map((m) => (
+                    <button key={m} type="button" onClick={() => setPotMonths(m)} className={cn('chip', potMonths === m && 'chip-active')}>
+                      {m} cycles
+                    </button>
+                  ))}
+                  {basePreview ? (
+                    <span className="text-[11px] text-muted">≈ {formatMoney(perCycleFor(basePreview, potMonths), settings.currency)}/cycle</span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <Field label="Note (optional)">
             <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was this for?" rows={2} />

@@ -22,6 +22,7 @@ import { formatMoney } from '../lib/money'
 import { Badge, Button, Card, EmptyState, Input, Markdown, SectionTitle, Segmented, Spinner, cn } from '../components/ui'
 import { Heatmap, MerchantBars, MonthlyBars, WeekdayBars } from '../components/charts'
 import { ReportExport } from '../components/ReportExport'
+import { ShareCharts } from '../components/ShareCharts'
 
 type RangeKey = 'cycle' | 'last' | '30' | '90'
 
@@ -181,7 +182,8 @@ export function Insights() {
 
   return (
     <div className="space-y-3.5">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <ShareCharts variant="soft" label="Share charts" />
         <ReportExport variant="soft" />
       </div>
       <Card className="space-y-3">

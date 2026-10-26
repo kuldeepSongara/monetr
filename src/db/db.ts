@@ -10,6 +10,7 @@ import type {
   CurrencyProfile,
   FlagEntry,
   FlagIdea,
+  Pot,
   ImportRecord,
   Investment,
   InvestmentTransfer,
@@ -28,7 +29,7 @@ import { minorFactor, toBaseMinor, toMinor } from '../lib/money'
 import { downloadFile, median, normalizeMerchant, pickFile, safeJsonParse, uid } from '../lib/utils'
 import { predictBill } from '../lib/bills'
 
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export const DB_NAME = 'monetr'
 
@@ -51,6 +52,7 @@ class MonetrDB extends Dexie {
   flagIdeas!: Table<FlagIdea, string>
   imports!: Table<ImportRecord, string>
   tombstones!: Table<Tombstone, string>
+  pots!: Table<Pot, string>
 
   constructor() {
     super(DB_NAME)
@@ -86,6 +88,14 @@ class MonetrDB extends Dexie {
           if (s.autoLockDelay === undefined) s.autoLockDelay = 0
         })
       })
+    // v3: savings pots for one-time purchases.
+    this.version(3)
+      .stores({ pots: 'id, kind, archived' })
+      .upgrade(async (tx) => {
+        await tx.table('settings').toCollection().modify((s: Settings) => {
+          s.schemaVersion = 3
+        })
+      })
   }
 }
 
@@ -105,6 +115,7 @@ export const SYNC_TABLES = [
   'investmentTransfers',
   'flags',
   'flagIdeas',
+  'pots',
   'profiles',
 ] as const
 export type SyncTable = (typeof SYNC_TABLES)[number]
@@ -407,6 +418,14 @@ export async function deleteCategory(id: string): Promise<void> {
     )
   }
   const budgetIds = (await db.budgets.where('categoryId').equals(id).primaryKeys()) as string[]
+  // Group budgets lose the category; a group left with nothing to count is removed with it.
+  const groups = await db.budgets.where('categoryId').equals('group').toArray()
+  for (const g of groups) {
+    if (!g.categoryIds?.includes(id)) continue
+    const left = g.categoryIds.filter((c) => c !== id)
+    if (left.length) await db.budgets.put({ ...g, categoryIds: left, updatedAt: nowISO() })
+    else budgetIds.push(g.id)
+  }
   await recordDeletion('budgets', budgetIds)
   await recordDeletion('categories', [id])
   await db.budgets.bulkDelete(budgetIds)
@@ -712,6 +731,9 @@ export async function deletePayment(id: string, deleteTxn = true): Promise<void>
 
 export interface BudgetInput {
   categoryId: string
+  categoryIds?: string[]
+  name?: string
+  emoji?: string
   amount: number
   rollover: boolean
   period: Budget['period']
@@ -723,6 +745,9 @@ export async function saveBudget(input: BudgetInput, id?: string): Promise<void>
   await db.budgets.put({
     id: id ?? uid('bg_'),
     categoryId: input.categoryId,
+    ...(input.categoryId === 'group'
+      ? { categoryIds: [...new Set(input.categoryIds ?? [])], name: input.name?.trim() || undefined, emoji: input.emoji?.trim() || undefined }
+      : {}),
     amount: Math.max(0, input.amount),
     rollover: input.rollover,
     period: input.period,
@@ -735,6 +760,41 @@ export async function saveBudget(input: BudgetInput, id?: string): Promise<void>
 export async function deleteBudget(id: string): Promise<void> {
   await recordDeletion('budgets', [id])
   await db.budgets.delete(id)
+}
+
+/* ----------------------------------- pots ---------------------------------- */
+
+export type PotInput = Omit<Pot, 'id' | 'createdAt' | 'updatedAt'>
+
+export async function savePot(input: PotInput, id?: string): Promise<string> {
+  const existing = id ? await db.pots.get(id) : undefined
+  const at = nowISO()
+  const pot: Pot = {
+    ...input,
+    id: id ?? uid('pot_'),
+    name: input.name.trim() || 'Savings pot',
+    target: Math.max(0, Math.round(input.target)),
+    perCycle: Math.max(1, Math.round(input.perCycle)),
+    createdAt: existing?.createdAt ?? at,
+    updatedAt: at,
+  }
+  await db.pots.put(pot)
+  return pot.id
+}
+
+/** Link (or unlink, with null) purchases to a pot. */
+export async function setTxnPot(txnIds: string[], potId: string | null): Promise<void> {
+  const txns = (await db.transactions.bulkGet(txnIds)).filter((t): t is Txn => Boolean(t))
+  const at = nowISO()
+  await db.transactions.bulkPut(txns.map((t) => ({ ...t, potId: potId ?? undefined, updatedAt: at })))
+}
+
+/** Removes the pot; its purchases stay and count against their cycle's budget again. */
+export async function deletePot(id: string): Promise<void> {
+  const linked = await db.transactions.filter((t) => t.potId === id).primaryKeys()
+  await setTxnPot(linked as string[], null)
+  await recordDeletion('pots', [id])
+  await db.pots.delete(id)
 }
 
 /* ----------------------------------- rules --------------------------------- */
@@ -848,6 +908,7 @@ const DATA_TABLES = [
   'investmentTransfers',
   'flags',
   'flagIdeas',
+  'pots',
 ] as const
 type DataTable = (typeof DATA_TABLES)[number]
 
@@ -954,13 +1015,14 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
   const factor = minorFactor(newCode) / minorFactor(oldCode)
   const at = nowISO()
 
-  const [txns, bills, payments, budgets, invTxs, currencyProfiles] = await Promise.all([
+  const [txns, bills, payments, budgets, invTxs, currencyProfiles, pots] = await Promise.all([
     db.transactions.toArray(),
     db.bills.toArray(),
     db.billPayments.toArray(),
     db.budgets.toArray(),
     db.investmentTxs.toArray(),
     db.currencyProfiles.toArray(),
+    db.pots.toArray(),
   ])
 
   // Anything already recorded in the new base currency is now 1:1.
@@ -971,8 +1033,9 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.transactions, db.bills, db.billPayments, db.budgets, db.settings, db.investmentTxs, db.currencyProfiles],
+    [db.transactions, db.bills, db.billPayments, db.budgets, db.settings, db.investmentTxs, db.currencyProfiles, db.pots],
     async () => {
+      await db.pots.bulkPut(pots.map((p) => ({ ...p, target: Math.round(p.target * factor), perCycle: Math.round(p.perCycle * factor), updatedAt: at })))
       await db.transactions.bulkPut(txns.map((t) => ({ ...rebase(t), updatedAt: at })))
       await db.bills.bulkPut(bills.map((b) => ({ ...rebase(b), updatedAt: at })))
       await db.billPayments.bulkPut(payments.map((p) => ({ ...rebase(p), updatedAt: at })))
@@ -1387,9 +1450,8 @@ export async function seedSampleData(): Promise<void> {
   const budgets: Budget[] = [
     { id: uid('demo_bg_'), categoryId: 'all', amount: Math.round(2600 * unit), rollover: false, period: 'cycle', createdAt: at, updatedAt: at },
     { id: uid('demo_bg_'), categoryId: 'cat_groceries', amount: Math.round(520 * unit), rollover: true, period: 'cycle', createdAt: at, updatedAt: at },
-    { id: uid('demo_bg_'), categoryId: 'cat_dining', amount: Math.round(260 * unit), rollover: false, period: 'cycle', createdAt: at, updatedAt: at },
     { id: uid('demo_bg_'), categoryId: 'cat_transport', amount: Math.round(180 * unit), rollover: false, period: 'cycle', createdAt: at, updatedAt: at },
-    { id: uid('demo_bg_'), categoryId: 'cat_shopping', amount: Math.round(220 * unit), rollover: true, period: 'cycle', createdAt: at, updatedAt: at },
+    { id: uid('demo_bg_'), categoryId: 'group', categoryIds: ['cat_dining', 'cat_shopping'], name: 'Fun money', emoji: '🛍️', amount: Math.round(480 * unit), rollover: true, period: 'cycle', createdAt: at, updatedAt: at },
     { id: uid('demo_bg_'), categoryId: 'cat_subscriptions', amount: Math.round(120 * unit), rollover: false, period: 'cycle', createdAt: at, updatedAt: at },
   ]
 

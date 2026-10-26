@@ -11,6 +11,7 @@ export default {
         ink: 'rgb(var(--ink) / <alpha-value>)',
         muted: 'rgb(var(--muted) / <alpha-value>)',
         accent: 'rgb(var(--accent) / <alpha-value>)',
+        'accent-fg': 'rgb(var(--accent-fg) / <alpha-value>)',
         good: 'rgb(var(--good) / <alpha-value>)',
         bad: 'rgb(var(--bad) / <alpha-value>)',
         warn: 'rgb(var(--warn) / <alpha-value>)',

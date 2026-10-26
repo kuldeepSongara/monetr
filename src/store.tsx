@@ -10,6 +10,7 @@ import {
 } from 'react'
 import type {
   AILogEntry,
+  Pot,
   AIProfile,
   Bill,
   BillPayment,
@@ -37,6 +38,8 @@ import { isAutoLockSuspended } from './lib/lockGuard'
 import { hashPin, lockoutMs, verifyPin } from './lib/pin'
 import { verifyBiometric, type BiometricCredential } from './lib/biometric'
 import { requestAutoSync, setSyncState, startAutoSync } from './lib/sync'
+import { accentVars } from './lib/theme'
+import { potStatuses, potTxnIds, type PotStatus } from './lib/pots'
 import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type BudgetRow, type SafeToSpend } from './lib/analytics'
 import { predictBill, type BillSchedule } from './lib/bills'
 import { findDuplicates, type DuplicatePair } from './lib/duplicates'
@@ -64,6 +67,7 @@ interface AppState {
   currencyProfiles: CurrencyProfile[]
   investments: Investment[]
   investmentTxs: InvestmentTx[]
+  pots: Pot[]
 }
 
 export type UnlockResult = { ok: true } | { ok: false; retryInMs?: number }
@@ -74,6 +78,8 @@ interface StoreValue extends AppState {
   schedules: Map<string, BillSchedule>
   rows: BudgetRow[]
   safe: SafeToSpend
+  /** Savings pots with their progress; purchases paid from them skip the cycle budget. */
+  potList: PotStatus[]
   anomalies: ReturnType<typeof detectAnomalies>
   subscriptions: ReturnType<typeof detectSubscriptions>
   /** Possible double entries / double charges, for you to review. Never acted on automatically. */
@@ -111,17 +117,10 @@ const defaultState: AppState = {
   currencyProfiles: [],
   investments: [],
   investmentTxs: [],
+  pots: [],
 }
 
 const AppContext = createContext<StoreValue | null>(null)
-
-function hexToRgbTriplet(hex: string): string {
-  const clean = hex.replace('#', '')
-  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean
-  const num = Number.parseInt(full, 16)
-  if (!Number.isFinite(num)) return '124 92 255'
-  return `${(num >> 16) & 255} ${(num >> 8) & 255} ${num & 255}`
-}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(defaultState)
@@ -144,7 +143,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const firstLoad = useRef(true)
   const refresh = useCallback(async (opts?: { fromSync?: boolean }) => {
-    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs] = await Promise.all([
+    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs, pots] = await Promise.all([
       db.settings.toArray(),
       db.categories.orderBy('order').toArray(),
       db.transactions.toArray(),
@@ -157,6 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       listCurrencyProfiles().catch(() => []),
       db.investments.toArray().catch(() => []),
       db.investmentTxs.toArray().catch(() => []),
+      db.pots.toArray().catch(() => []),
     ])
     const settings = settingsArr[0] ?? makeDefaultSettings()
     if (firstLoad.current) {
@@ -178,6 +178,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currencyProfiles,
       investments,
       investmentTxs,
+      pots,
     })
     storageEstimate().then(setUsage).catch(() => {})
     if (!opts?.fromSync) requestAutoSync()
@@ -224,7 +225,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const apply = () => {
       const resolved = state.settings.theme === 'system' ? (media.matches ? 'dark' : 'light') : state.settings.theme
       document.documentElement.dataset.theme = resolved
-      document.documentElement.style.setProperty('--accent', hexToRgbTriplet(state.settings.accent))
+      const { accent, accentFg } = accentVars(state.settings.accent, resolved === 'dark' ? 'dark' : 'light')
+      document.documentElement.style.setProperty('--accent', accent)
+      document.documentElement.style.setProperty('--accent-fg', accentFg)
       const meta = document.querySelector('meta[name="theme-color"]')
       if (meta) meta.setAttribute('content', resolved === 'dark' ? '#0b0d12' : '#f5f6fa')
     }
@@ -413,19 +416,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return map
   }, [state.bills, state.payments, today])
 
+  const potList = useMemo(() => potStatuses(state.pots, state.transactions, state.settings, today), [state.pots, state.transactions, state.settings, today])
+
+  // Purchases paid from a pot stay in history and charts, but budgets, safe-to-spend and spike
+  // alerts look at everyday spending only — the pot covers them over several cycles instead.
+  const everyday = useMemo(() => {
+    const ids = potTxnIds(state.transactions, new Set(state.pots.map((p) => p.id)))
+    return ids.size ? state.transactions.filter((t) => !ids.has(t.id)) : state.transactions
+  }, [state.transactions, state.pots])
+
   const rows = useMemo(
-    () => budgetRows(state.budgets, state.transactions, state.categories, state.settings, today),
-    [state.budgets, state.transactions, state.categories, state.settings, today],
+    () => budgetRows(state.budgets, everyday, state.categories, state.settings, today),
+    [state.budgets, everyday, state.categories, state.settings, today],
   )
 
+  const potsReserved = useMemo(() => potList.reduce((s, p) => s + p.thisCycle, 0), [potList])
+
   const safe = useMemo(
-    () => computeSafeToSpend(rows, state.transactions, state.bills, schedules, state.settings, today),
-    [rows, state.transactions, state.bills, schedules, state.settings, today],
+    () => computeSafeToSpend(rows, everyday, state.bills, schedules, state.settings, today, potsReserved),
+    [rows, everyday, state.bills, schedules, state.settings, today, potsReserved],
   )
 
   const anomalies = useMemo(
-    () => detectAnomalies(state.transactions, state.categories, state.settings, today),
-    [state.transactions, state.categories, state.settings, today],
+    () => detectAnomalies(everyday, state.categories, state.settings, today),
+    [everyday, state.categories, state.settings, today],
   )
 
   const subscriptions = useMemo(() => detectSubscriptions(state.transactions, today), [state.transactions, today])
@@ -467,6 +481,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     schedules,
     rows,
     safe,
+    potList,
     anomalies,
     subscriptions,
     duplicates,

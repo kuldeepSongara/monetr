@@ -83,7 +83,7 @@ export function buildSpendContext(input: BuildContextInput): SpendContext {
       count: m.count,
     })),
     budgets: rows.map((r) => ({
-      name: r.category?.name ?? 'Everything',
+      name: r.parts ? `${r.label} (${r.parts.map((p) => p.category.name).join(' + ')})` : r.label,
       limit: toMajor(r.limit),
       spent: toMajor(r.spent),
       remaining: toMajor(r.remaining),

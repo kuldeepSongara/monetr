@@ -175,7 +175,7 @@ export function Onboarding() {
                       aria-label={`Accent ${hex}`}
                       className={cn(
                         'h-8 w-8 rounded-full border-2 transition',
-                        accent === hex ? 'border-ink scale-105' : 'border-transparent',
+                        accent === hex ? 'border-ink scale-105' : 'border-line',
                       )}
                       style={{ background: hex }}
                     />

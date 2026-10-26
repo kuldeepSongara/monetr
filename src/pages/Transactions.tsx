@@ -23,7 +23,7 @@ const RANGES: { key: RangeKey; label: string }[] = [
 ]
 
 export function Transactions() {
-  const { transactions, categories, categoryMap, settings, today, duplicates } = useApp()
+  const { transactions, categories, categoryMap, settings, today, duplicates, potList } = useApp()
   const dupIds = useMemo(() => new Set(duplicates.flatMap((d) => [d.a.id, d.b.id])), [duplicates])
   const [q, setQ] = useState('')
   const [rangeKey, setRangeKey] = useState<RangeKey>('cycle')
@@ -60,6 +60,7 @@ export function Transactions() {
   }, [transactions, range, type, categoryId, q, categoryMap])
 
   const sums = totals(filtered)
+  const potNames = useMemo(() => new Map(potList.map((p) => [p.pot.id, p.pot.name])), [potList])
   const refundedIds = useMemo(() => new Set(transactions.filter((t) => t.refundOf).map((t) => t.refundOf as string)), [transactions])
 
   const groups = useMemo(() => {
@@ -193,6 +194,7 @@ export function Transactions() {
                             {t.type === 'refund' ? <Badge tone="good">refund</Badge> : null}
                             {dupIds.has(t.id) ? <Badge tone="warn">possible duplicate</Badge> : null}
                             {refundedIds.has(t.id) ? <Badge tone="good">refunded</Badge> : null}
+                            {t.potId && potNames.has(t.potId) ? <Badge>pot · {potNames.get(t.potId)}</Badge> : null}
                             {t.source === 'bill' ? <Badge tone="neutral">bill</Badge> : null}
                             {t.currency !== currency ? <span>· {formatMoney(t.amount, t.currency)}</span> : null}
                             {t.note ? <span className="truncate">· {t.note}</span> : null}
