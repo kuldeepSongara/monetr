@@ -6,6 +6,7 @@ import { fileToDataUrl } from '../lib/image'
 import { parseQuickAdd, scanReceipt } from '../ai/tasks'
 import { canUseProfile } from '../ai/providers'
 import { pickFile } from '../lib/utils'
+import { parseQuickLocal } from '../lib/quickParse'
 import { cn } from './ui'
 
 export function QuickAddBar({
@@ -17,21 +18,38 @@ export function QuickAddBar({
   className?: string
   placeholder?: string
 }) {
-  const { categories, settings, profiles, notify } = useApp()
+  const { categories, settings, profiles, rules, today, notify } = useApp()
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [scanning, setScanning] = useState(false)
   const aiReady = profiles.some(canUseProfile)
 
+  /** Offline fallback so logging a spend never waits on an AI provider. */
+  function parseLocally(reason?: string): boolean {
+    const local = parseQuickLocal(text, categories, rules, settings.currency, today)
+    if (!local) {
+      notify(reason ? `${reason} Couldn't find an amount — try “coffee 4.50”.` : 'Couldn\'t find an amount — try “coffee 4.50 yesterday”.', 'error')
+      return false
+    }
+    onSeed({ type: local.type, amountMajor: local.amount, date: local.date, merchant: local.merchant, categoryId: local.categoryId, currency: local.currency, source: 'manual' })
+    setText('')
+    if (reason) notify(`${reason} Filled in offline — check it before saving.`, 'info')
+    return true
+  }
+
   async function handleParse() {
     if (!text.trim() || busy) return
     if (!aiReady) {
-      notify('Add an AI profile in Settings → AI profiles first.', 'error')
+      parseLocally()
       return
     }
     setBusy(true)
     try {
-      const { draft, result } = await parseQuickAdd(text, categories, settings.currency)
+      // Don't keep you waiting on an overloaded provider: after 15s fall back to the offline parser.
+      const { draft, result } = await Promise.race([
+        parseQuickAdd(text, categories, settings.currency),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AI is slow right now.')), 15_000)),
+      ])
       onSeed({
         type: draft.type,
         amountMajor: draft.amount,
@@ -45,7 +63,8 @@ export function QuickAddBar({
       setText('')
       notify(`Parsed with ${result.profileName}`, 'success')
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Could not parse that', 'error')
+      const msg = err instanceof Error && /slow/.test(err.message) ? 'AI is slow right now.' : 'AI is unavailable.'
+      parseLocally(msg)
     } finally {
       setBusy(false)
     }
@@ -54,7 +73,7 @@ export function QuickAddBar({
   async function handleScan() {
     if (scanning) return
     if (!aiReady) {
-      notify('Add an AI profile in Settings → AI profiles first.', 'error')
+      notify('Receipt scanning needs an AI profile (Settings → AI profiles).', 'error')
       return
     }
     const file = await pickFile('image/*')
@@ -77,7 +96,9 @@ export function QuickAddBar({
       })
       notify(`Receipt read with ${result.profileName}`, 'success')
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Could not read that receipt', 'error')
+      // Never leave you stuck: open a blank entry so you can type the receipt in.
+      notify(`${err instanceof Error ? err.message : 'Could not read that receipt'} — enter it manually.`, 'error')
+      onSeed({ type: 'expense', source: 'receipt', note: 'From receipt' })
     } finally {
       setScanning(false)
     }

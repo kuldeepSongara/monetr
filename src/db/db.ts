@@ -8,21 +8,27 @@ import type {
   Budget,
   Category,
   CurrencyProfile,
+  FlagEntry,
+  FlagIdea,
+  ImportRecord,
   Investment,
+  InvestmentTransfer,
   InvestmentTx,
   ISODate,
   MetaRow,
   Rule,
   Settings,
+  Tombstone,
   Txn,
   WidgetId,
 } from '../types'
+import { SHARED_SETTING_KEYS } from '../types'
 import { addDays, addMonths, daysBetween, todayISO, nowISO, toISO } from '../lib/dates'
 import { minorFactor, toBaseMinor, toMinor } from '../lib/money'
 import { downloadFile, median, normalizeMerchant, pickFile, safeJsonParse, uid } from '../lib/utils'
 import { predictBill } from '../lib/bills'
 
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export const DB_NAME = 'monetr'
 
@@ -40,10 +46,11 @@ class MonetrDB extends Dexie {
   currencyProfiles!: Table<CurrencyProfile, string>
   investments!: Table<Investment, string>
   investmentTxs!: Table<InvestmentTx, string>
-  investmentTransfers!: Table<any, string>
-  flags!: Table<any, string>
-  flagIdeas!: Table<any, string>
-  imports!: Table<any, string>
+  investmentTransfers!: Table<InvestmentTransfer, string>
+  flags!: Table<FlagEntry, string>
+  flagIdeas!: Table<FlagIdea, string>
+  imports!: Table<ImportRecord, string>
+  tombstones!: Table<Tombstone, string>
 
   constructor() {
     super(DB_NAME)
@@ -66,10 +73,48 @@ class MonetrDB extends Dexie {
       flagIdeas: 'id, status, createdAt',
       imports: 'id, status, createdAt',
     })
+    // v2: tombstones for sync, transfer categories. Never edit a released version block — add a new one.
+    this.version(2)
+      .stores({ tombstones: 'id, table, deletedAt' })
+      .upgrade(async (tx) => {
+        const cats = tx.table('categories')
+        for (const cat of TRANSFER_CATEGORIES) {
+          if (!(await cats.get(cat.id))) await cats.put(cat)
+        }
+        await tx.table('settings').toCollection().modify((s: Settings) => {
+          s.schemaVersion = 2
+          if (s.autoLockDelay === undefined) s.autoLockDelay = 0
+        })
+      })
   }
 }
 
 export const db = new MonetrDB()
+
+/** Tables that sync between linked devices (AI profiles are opt-in, see lib/sync). */
+export const SYNC_TABLES = [
+  'categories',
+  'transactions',
+  'bills',
+  'billPayments',
+  'budgets',
+  'rules',
+  'currencyProfiles',
+  'investments',
+  'investmentTxs',
+  'investmentTransfers',
+  'flags',
+  'flagIdeas',
+  'profiles',
+] as const
+export type SyncTable = (typeof SYNC_TABLES)[number]
+
+/** Remember a deletion so sync can propagate it instead of resurrecting the record from another device. */
+export async function recordDeletion(table: SyncTable, ids: string[]): Promise<void> {
+  if (!ids.length) return
+  const at = nowISO()
+  await db.tombstones.bulkPut(ids.map((recordId) => ({ id: `${table}:${recordId}`, table, recordId, deletedAt: at })))
+}
 
 /* --------------------------------- defaults -------------------------------- */
 
@@ -115,6 +160,8 @@ const SEED_CATEGORIES: SeedCategory[] = [
   { slug: 'interest', name: 'Interest', emoji: '📈', color: CATEGORY_COLORS.amber, kind: 'income' },
   { slug: 'gifts', name: 'Gifts', emoji: '🎁', color: CATEGORY_COLORS.rose, kind: 'income' },
   { slug: 'other-income', name: 'Other income', emoji: '💰', color: CATEGORY_COLORS.slate, kind: 'income' },
+  { slug: 'transfer', name: 'Transfer', emoji: '🔄', color: CATEGORY_COLORS.slate, kind: 'transfer' },
+  { slug: 'card-payment', name: 'Card payment', emoji: '💳', color: CATEGORY_COLORS.slate, kind: 'transfer' },
 ]
 
 export const DEFAULT_CATEGORY_IDS = {
@@ -136,6 +183,8 @@ export const DEFAULT_CATEGORY_IDS = {
   interest: 'cat_interest',
   gifts: 'cat_gifts',
   otherIncome: 'cat_other-income',
+  transfer: 'cat_transfer',
+  cardPayment: 'cat_card-payment',
 }
 
 export function makeCategories(): Category[] {
@@ -148,6 +197,8 @@ export function makeCategories(): Category[] {
     order: i,
   }))
 }
+
+const TRANSFER_CATEGORIES: Category[] = makeCategories().filter((c) => c.kind === 'transfer')
 
 export function makeDefaultSettings(): Settings {
   const at = nowISO()
@@ -163,6 +214,8 @@ export function makeDefaultSettings(): Settings {
     defaultBillLeadDays: 3,
     notifications: false,
     lockEnabled: false,
+    autoLockDelay: 0,
+    lockOnBlur: false,
     failoverEnabled: true,
     autoSwitchActive: true,
     dashboardWidgets: ['safe', 'alerts', 'trend', 'categories', 'budgets', 'bills', 'recent'],
@@ -218,13 +271,14 @@ export async function deleteCurrencyProfile(id: string): Promise<void> {
   if (prof?.isBase) throw new Error('Cannot delete the base currency profile')
   const def = all.find((p) => p.isDefault && p.id !== id) || all.find((p) => p.id !== id)
   if (!def) return
+  await recordDeletion('currencyProfiles', [id])
   await db.transaction('rw', [db.currencyProfiles, db.transactions, db.bills, db.billPayments, db.investments, db.investmentTxs], async () => {
     await db.currencyProfiles.delete(id)
     await db.transactions.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
     await db.bills.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
-    await db.billPayments.where('profileId').equals(id).modify({ profileId: def.id })
+    await db.billPayments.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
     await db.investments.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
-    await db.investmentTxs.where('profileId').equals(id).modify({ profileId: def.id })
+    await db.investmentTxs.where('profileId').equals(id).modify({ profileId: def.id, updatedAt: nowISO() })
   })
 }
 
@@ -242,7 +296,7 @@ export async function addInvestment(input: Partial<Investment> & { name: string;
   const inv: Investment = {
     id: input.id ?? uid('inv_'),
     profileId: input.profileId,
-    currency: input.currency || 'USD',
+    currency: input.currency || (await db.currencyProfiles.get(input.profileId))?.code || 'USD',
     type: input.type,
     symbol: input.symbol?.toUpperCase(),
     name: input.name,
@@ -267,6 +321,9 @@ export async function updateInvestment(id: string, patch: Partial<Investment>): 
 }
 
 export async function deleteInvestment(id: string): Promise<void> {
+  const txIds = (await db.investmentTxs.where('investmentId').equals(id).primaryKeys()) as string[]
+  await recordDeletion('investments', [id])
+  await recordDeletion('investmentTxs', txIds)
   await db.transaction('rw', [db.investments, db.investmentTxs], async () => {
     await db.investments.delete(id)
     await db.investmentTxs.where('investmentId').equals(id).delete()
@@ -289,12 +346,14 @@ export async function addInvestmentTx(input: Omit<InvestmentTx, 'id' | 'createdA
     fees: input.fees,
     note: input.note,
     createdAt: nowISO(),
+    updatedAt: nowISO(),
   }
   await db.investmentTxs.put(tx)
   return tx
 }
 
 export async function deleteInvestmentTx(id: string): Promise<void> {
+  await recordDeletion('investmentTxs', [id])
   await db.investmentTxs.delete(id)
 }
 
@@ -302,7 +361,15 @@ export async function deleteInvestmentTx(id: string): Promise<void> {
 
 export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   const current = (await db.settings.get('settings')) ?? makeDefaultSettings()
-  const next: Settings = { ...current, ...patch, id: 'settings', updatedAt: nowISO() }
+  const at = nowISO()
+  const touchesShared = SHARED_SETTING_KEYS.some((k) => k in patch && patch[k] !== current[k])
+  const next: Settings = {
+    ...current,
+    ...patch,
+    id: 'settings',
+    updatedAt: at,
+    ...(touchesShared ? { sharedUpdatedAt: at } : {}),
+  }
   await db.settings.put(next)
   return next
 }
@@ -314,7 +381,7 @@ export async function setWidgetOrder(order: WidgetId[]): Promise<void> {
 /* -------------------------------- categories ------------------------------- */
 
 export async function saveCategory(category: Category): Promise<void> {
-  await db.categories.put(category)
+  await db.categories.put({ ...category, updatedAt: nowISO() })
 }
 
 export async function deleteCategory(id: string): Promise<void> {
@@ -327,12 +394,22 @@ export async function deleteCategory(id: string): Promise<void> {
     await db.transactions.bulkPut(
       txns.map((t) => ({
         ...t,
-        categoryId: t.categoryId === id ? (t.type === 'income' ? DEFAULT_CATEGORY_IDS.otherIncome : fallback) : t.categoryId,
+        categoryId:
+          t.categoryId === id
+            ? t.type === 'income'
+              ? DEFAULT_CATEGORY_IDS.otherIncome
+              : t.type === 'transfer'
+                ? DEFAULT_CATEGORY_IDS.transfer
+                : fallback
+            : t.categoryId,
         updatedAt: nowISO(),
       })),
     )
   }
-  await db.budgets.where('categoryId').equals(id).delete()
+  const budgetIds = (await db.budgets.where('categoryId').equals(id).primaryKeys()) as string[]
+  await recordDeletion('budgets', budgetIds)
+  await recordDeletion('categories', [id])
+  await db.budgets.bulkDelete(budgetIds)
   await db.categories.delete(id)
 }
 
@@ -350,6 +427,7 @@ export interface TxnInput {
   source?: Txn['source']
   categorySource?: Txn['categorySource']
   tags?: string[]
+  refundOf?: string
 }
 
 export async function addTransaction(input: TxnInput, baseCurrency: string): Promise<Txn> {
@@ -370,6 +448,7 @@ export async function addTransaction(input: TxnInput, baseCurrency: string): Pro
     tags: input.tags,
     source: input.source ?? 'manual',
     categorySource: input.categorySource ?? 'manual',
+    refundOf: input.refundOf,
     createdAt: at,
     updatedAt: at,
   }
@@ -395,12 +474,52 @@ export async function updateTransaction(id: string, input: TxnInput, baseCurrenc
     note: input.note?.trim() || undefined,
     tags: input.tags ?? existing.tags,
     categorySource: input.categorySource ?? existing.categorySource,
+    refundOf: input.refundOf ?? existing.refundOf,
     updatedAt: nowISO(),
   })
 }
 
+/** You confirmed two similar transactions are both real; never flag this pair again (syncs). */
+export async function markNotDuplicate(aId: string, bId: string): Promise<void> {
+  const [a, b] = await db.transactions.bulkGet([aId, bId])
+  const at = nowISO()
+  const put: Txn[] = []
+  if (a) put.push({ ...a, notDuplicateOf: [...new Set([...(a.notDuplicateOf ?? []), bId])], updatedAt: at })
+  if (b) put.push({ ...b, notDuplicateOf: [...new Set([...(b.notDuplicateOf ?? []), aId])], updatedAt: at })
+  if (put.length) await db.transactions.bulkPut(put)
+}
+
+/** Record money back for an expense (full or partial return). Same category, so it reduces that spending. */
+export async function addRefund(
+  original: Txn,
+  opts: { amountMinor: number; date: ISODate; note?: string; merchant?: string },
+  baseCurrency: string,
+): Promise<Txn> {
+  return addTransaction(
+    {
+      date: opts.date,
+      amount: opts.amountMinor,
+      currency: original.currency,
+      // Same rate as the purchase so a full refund cancels it exactly in your base currency.
+      fxRate: original.fxRate,
+      type: 'refund',
+      categoryId: original.categoryId,
+      merchant: opts.merchant ?? original.merchant,
+      note: opts.note,
+      source: 'manual',
+      categorySource: 'manual',
+      refundOf: original.id,
+    },
+    baseCurrency,
+  )
+}
+
 export async function deleteTransaction(id: string): Promise<void> {
+  await recordDeletion('transactions', [id])
   await db.transactions.delete(id)
+  // A bill payment pointing at this transaction no longer has one.
+  const linked = await db.billPayments.filter((p) => p.txnId === id).toArray()
+  if (linked.length) await db.billPayments.bulkPut(linked.map((p) => ({ ...p, txnId: undefined, updatedAt: nowISO() })))
 }
 
 export async function bulkUpdateCategory(
@@ -434,6 +553,19 @@ export interface BillInput {
   autoPay: boolean
   leadDays: number
   notes?: string
+  split?: Bill['split'] | null
+}
+
+/** The split partner's share of one payment, in the bill's minor units. */
+export function splitShare(bill: Pick<Bill, 'split'>, amountMinor: number): number {
+  const s = bill.split
+  if (!s || !(s.value > 0)) return 0
+  return s.mode === 'percent' ? Math.round((amountMinor * Math.min(100, s.value)) / 100) : Math.min(amountMinor, s.value)
+}
+
+function splitFields(bill: Bill, amountMinor: number): Pick<BillPayment, 'splitAmount' | 'splitName'> {
+  const share = splitShare(bill, amountMinor)
+  return share ? { splitAmount: share, splitName: bill.split?.name } : {}
 }
 
 export async function addBill(input: BillInput, baseCurrency: string): Promise<Bill> {
@@ -456,6 +588,7 @@ export async function addBill(input: BillInput, baseCurrency: string): Promise<B
     leadDays: input.leadDays,
     active: true,
     notes: input.notes?.trim() || undefined,
+    split: input.split ?? undefined,
     createdAt: at,
     updatedAt: at,
   }
@@ -472,6 +605,7 @@ export async function addBill(input: BillInput, baseCurrency: string): Promise<B
       fxRate: bill.fxRate,
       baseAmount: bill.baseAmount,
       createdAt: at,
+      updatedAt: at,
     })
   }
   return bill
@@ -498,13 +632,17 @@ export async function updateBill(id: string, input: BillInput, baseCurrency: str
     autoPay: input.autoPay,
     leadDays: input.leadDays,
     notes: input.notes?.trim() || undefined,
+    split: input.split === undefined ? existing.split : (input.split ?? undefined),
     updatedAt: nowISO(),
   })
 }
 
 export async function deleteBill(id: string): Promise<void> {
+  const paymentIds = (await db.billPayments.where('billId').equals(id).primaryKeys()) as string[]
+  await recordDeletion('bills', [id])
+  await recordDeletion('billPayments', paymentIds)
   await db.bills.delete(id)
-  await db.billPayments.where('billId').equals(id).delete()
+  await db.billPayments.bulkDelete(paymentIds)
 }
 
 export async function snoozeBill(id: string, until: ISODate): Promise<void> {
@@ -530,7 +668,9 @@ export async function markBillPaid(
     fxRate: bill.fxRate,
     baseAmount: toBaseMinor(amount, bill.currency, bill.fxRate, baseCurrency),
     note: opts.note,
+    ...splitFields(bill, amount),
     createdAt: at,
+    updatedAt: at,
   }
 
   if (opts.createTxn !== false) {
@@ -560,7 +700,11 @@ export async function markBillPaid(
 export async function deletePayment(id: string, deleteTxn = true): Promise<void> {
   const p = await db.billPayments.get(id)
   if (!p) return
-  if (deleteTxn && p.txnId) await db.transactions.delete(p.txnId)
+  if (deleteTxn && p.txnId) {
+    await recordDeletion('transactions', [p.txnId])
+    await db.transactions.delete(p.txnId)
+  }
+  await recordDeletion('billPayments', [id])
   await db.billPayments.delete(id)
 }
 
@@ -589,6 +733,7 @@ export async function saveBudget(input: BudgetInput, id?: string): Promise<void>
 }
 
 export async function deleteBudget(id: string): Promise<void> {
+  await recordDeletion('budgets', [id])
   await db.budgets.delete(id)
 }
 
@@ -612,6 +757,7 @@ export async function learnRules(assignments: { merchant: string; categoryId: st
 }
 
 export async function deleteRule(id: string): Promise<void> {
+  await recordDeletion('rules', [id])
   await db.rules.delete(id)
 }
 
@@ -627,6 +773,7 @@ export async function saveProfile(profile: AIProfile): Promise<void> {
 }
 
 export async function deleteProfile(id: string): Promise<void> {
+  await recordDeletion('profiles', [id])
   await db.profiles.delete(id)
   const settings = await db.settings.get('settings')
   if (settings?.activeProfileId === id) {
@@ -686,31 +833,37 @@ export async function deleteMeta(key: string): Promise<void> {
 
 /* --------------------------------- backups --------------------------------- */
 
+/** Every table that holds user data. Backups, restores and wipes must cover all of them. */
+const DATA_TABLES = [
+  'profiles',
+  'categories',
+  'transactions',
+  'bills',
+  'billPayments',
+  'budgets',
+  'rules',
+  'currencyProfiles',
+  'investments',
+  'investmentTxs',
+  'investmentTransfers',
+  'flags',
+  'flagIdeas',
+] as const
+type DataTable = (typeof DATA_TABLES)[number]
+
+function table(name: DataTable): Table<{ id: string }, string> {
+  return db.table(name) as unknown as Table<{ id: string }, string>
+}
+
 export async function buildBackup(): Promise<BackupFile> {
-  const [settings, profiles, categories, transactions, bills, billPayments, budgets, rules] = await Promise.all([
-    db.settings.toArray(),
-    db.profiles.toArray(),
-    db.categories.toArray(),
-    db.transactions.toArray(),
-    db.bills.toArray(),
-    db.billPayments.toArray(),
-    db.budgets.toArray(),
-    db.rules.toArray(),
-  ])
+  const settings = await db.settings.get('settings')
+  const entries = await Promise.all(DATA_TABLES.map(async (name) => [name, await table(name).toArray()] as const))
+  const data = Object.fromEntries(entries) as unknown as Omit<BackupFile['data'], 'settings'>
   return {
     app: 'monetr',
     schemaVersion: SCHEMA_VERSION,
     exportedAt: nowISO(),
-    data: {
-      settings: settings[0] ?? makeDefaultSettings(),
-      profiles,
-      categories,
-      transactions,
-      bills,
-      billPayments,
-      budgets,
-      rules,
-    },
+    data: { settings: settings ?? makeDefaultSettings(), ...data },
   }
 }
 
@@ -720,54 +873,56 @@ export async function exportBackup(): Promise<void> {
   downloadFile(`monetr-backup-${todayISO()}.json`, JSON.stringify(backup, null, 2))
 }
 
+/** Device-local settings (lock, PIN, fingerprint) are never taken from a backup. */
+function withLocalSettings(incoming: Settings, current: Settings): Settings {
+  return {
+    ...makeDefaultSettings(),
+    ...incoming,
+    lockEnabled: current.lockEnabled,
+    pinHash: current.pinHash,
+    pinSalt: current.pinSalt,
+    autoLockDelay: current.autoLockDelay,
+    lockOnBlur: current.lockOnBlur,
+    biometricCredentialId: current.biometricCredentialId,
+    biometricPublicKey: current.biometricPublicKey,
+    biometricAlg: current.biometricAlg,
+    pinFailCount: 0,
+    pinLockedUntil: undefined,
+    schemaVersion: SCHEMA_VERSION,
+    onboarded: true,
+  }
+}
+
 export async function importBackup(backup: BackupFile, mode: 'replace' | 'merge'): Promise<{ added: number }> {
   if (backup?.app !== 'monetr' || !backup.data) {
     throw new Error('That file is not a Monetr backup.')
   }
-  const d = backup.data
+  const d = backup.data as unknown as Record<string, { id: string }[] | undefined> & { settings?: Settings }
+  const current = (await db.settings.get('settings')) ?? makeDefaultSettings()
+
   if (mode === 'replace') {
-    await db.transaction(
-      'rw',
-      [db.settings, db.profiles, db.categories, db.transactions, db.bills, db.billPayments, db.budgets, db.rules],
-      async () => {
-        await Promise.all([
-          db.settings.clear(),
-          db.profiles.clear(),
-          db.categories.clear(),
-          db.transactions.clear(),
-          db.bills.clear(),
-          db.billPayments.clear(),
-          db.budgets.clear(),
-          db.rules.clear(),
-        ])
-        await db.settings.put({ ...makeDefaultSettings(), ...d.settings, onboarded: true })
-        await db.profiles.bulkPut(d.profiles ?? [])
-        await db.categories.bulkPut(d.categories ?? [])
-        await db.transactions.bulkPut(d.transactions ?? [])
-        await db.bills.bulkPut(d.bills ?? [])
-        await db.billPayments.bulkPut(d.billPayments ?? [])
-        await db.budgets.bulkPut(d.budgets ?? [])
-        await db.rules.bulkPut(d.rules ?? [])
-      },
-    )
+    await db.transaction('rw', [db.settings, db.tombstones, ...DATA_TABLES.map(table)], async () => {
+      await Promise.all(DATA_TABLES.map((name) => table(name).clear()))
+      await db.tombstones.clear()
+      await db.settings.put(withLocalSettings(d.settings ?? makeDefaultSettings(), current))
+      for (const name of DATA_TABLES) {
+        const rows = d[name]
+        if (rows?.length) await table(name).bulkPut(rows)
+      }
+      if (!d.categories?.length) await db.categories.bulkPut(makeCategories())
+    })
     return { added: (d.transactions ?? []).length }
   }
 
   let added = 0
-  const merge = async <T>(table: Table<T, string>, rows: T[] | undefined) => {
-    if (!rows?.length) return
-    const existing = await table.bulkGet(rows.map((r) => (r as unknown as { id: string }).id))
+  for (const name of DATA_TABLES) {
+    const rows = d[name]
+    if (!rows?.length) continue
+    const existing = await table(name).bulkGet(rows.map((r) => r.id))
     const fresh = rows.filter((_, i) => !existing[i])
-    if (fresh.length) await table.bulkPut(fresh)
+    if (fresh.length) await table(name).bulkPut(fresh)
     added += fresh.length
   }
-  await merge(db.profiles, d.profiles)
-  await merge(db.categories, d.categories)
-  await merge(db.transactions, d.transactions)
-  await merge(db.bills, d.bills)
-  await merge(db.billPayments, d.billPayments)
-  await merge(db.budgets, d.budgets)
-  await merge(db.rules, d.rules)
   return { added }
 }
 
@@ -781,32 +936,14 @@ export async function pickAndImport(mode: 'replace' | 'merge'): Promise<number |
   return res.added
 }
 
+/** Factory reset of this device. Sync is unlinked by the caller so nothing is deleted on other devices. */
 export async function wipeAll(): Promise<void> {
-  await Promise.all([
-    db.transactions.clear(),
-    db.bills.clear(),
-    db.billPayments.clear(),
-    db.budgets.clear(),
-    db.rules.clear(),
-    db.meta.clear(),
-    db.aiLog.clear(),
-    db.profiles.clear(),
-  ])
-  await db.categories.clear()
-  await db.categories.bulkPut(makeCategories())
-  await db.settings.clear()
-  await db.settings.put({ ...makeDefaultSettings(), onboarded: false })
-}
-
-export async function deleteEverythingButProfiles(): Promise<void> {
-  await Promise.all([
-    db.transactions.clear(),
-    db.bills.clear(),
-    db.billPayments.clear(),
-    db.budgets.clear(),
-    db.rules.clear(),
-    db.meta.clear(),
-  ])
+  await db.transaction('rw', [db.settings, db.meta, db.aiLog, db.tombstones, db.imports, ...DATA_TABLES.map(table)], async () => {
+    await Promise.all([...DATA_TABLES.map((name) => table(name).clear()), db.meta.clear(), db.aiLog.clear(), db.tombstones.clear(), db.imports.clear()])
+    await db.categories.bulkPut(makeCategories())
+    await db.settings.clear()
+    await db.settings.put({ ...makeDefaultSettings(), onboarded: false })
+  })
 }
 
 /** Re-label stored base amounts after the base currency changes. */
@@ -815,36 +952,189 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
   const oldCode = settings.currency
   if (oldCode === newCode) return
   const factor = minorFactor(newCode) / minorFactor(oldCode)
+  const at = nowISO()
 
-  const [txns, bills, payments, budgets] = await Promise.all([
+  const [txns, bills, payments, budgets, invTxs, currencyProfiles] = await Promise.all([
     db.transactions.toArray(),
     db.bills.toArray(),
     db.billPayments.toArray(),
     db.budgets.toArray(),
+    db.investmentTxs.toArray(),
+    db.currencyProfiles.toArray(),
   ])
 
-  await db.transaction('rw', [db.transactions, db.bills, db.billPayments, db.budgets, db.settings], async () => {
-    await db.transactions.bulkPut(
-      txns.map((t) => ({
-        ...t,
-        baseAmount: toBaseMinor(t.amount, t.currency, t.fxRate, newCode),
-        updatedAt: nowISO(),
-      })),
-    )
-    await db.bills.bulkPut(
-      bills.map((b) => ({ ...b, baseAmount: toBaseMinor(b.amount, b.currency, b.fxRate, newCode), updatedAt: nowISO() })),
-    )
-    await db.billPayments.bulkPut(
-      payments.map((p) => ({ ...p, baseAmount: toBaseMinor(p.amount, p.currency, p.fxRate, newCode) })),
-    )
-    await db.budgets.bulkPut(budgets.map((b) => ({ ...b, amount: Math.round(b.amount * factor), updatedAt: nowISO() })))
-    await db.settings.put({
-      ...settings,
-      currency: newCode,
-      monthlyAllowance: Math.round(settings.monthlyAllowance * factor),
-      updatedAt: nowISO(),
-    })
+  // Anything already recorded in the new base currency is now 1:1.
+  const rebase = <T extends { amount: number; currency: string; fxRate: number }>(r: T): T & { baseAmount: number } => {
+    const fxRate = r.currency === newCode ? 1 : r.fxRate
+    return { ...r, fxRate, baseAmount: toBaseMinor(r.amount, r.currency, fxRate, newCode) }
+  }
+
+  await db.transaction(
+    'rw',
+    [db.transactions, db.bills, db.billPayments, db.budgets, db.settings, db.investmentTxs, db.currencyProfiles],
+    async () => {
+      await db.transactions.bulkPut(txns.map((t) => ({ ...rebase(t), updatedAt: at })))
+      await db.bills.bulkPut(bills.map((b) => ({ ...rebase(b), updatedAt: at })))
+      await db.billPayments.bulkPut(payments.map((p) => ({ ...rebase(p), updatedAt: at })))
+      await db.investmentTxs.bulkPut(invTxs.map((t) => ({ ...rebase(t), updatedAt: at })))
+      await db.budgets.bulkPut(budgets.map((b) => ({ ...b, amount: Math.round(b.amount * factor), updatedAt: at })))
+      await db.currencyProfiles.bulkPut(
+        currencyProfiles.map((p) =>
+          p.isBase
+            ? { ...p, code: newCode, name: p.name === oldCode ? newCode : p.name, fxToBase: 1, updatedAt: at }
+            : p.code === newCode
+              ? { ...p, fxToBase: 1, updatedAt: at }
+              : p,
+        ),
+      )
+      await db.settings.put({
+        ...settings,
+        currency: newCode,
+        monthlyAllowance: Math.round(settings.monthlyAllowance * factor),
+        updatedAt: at,
+        sharedUpdatedAt: at,
+      })
+    },
+  )
+}
+
+/* ---------------------------------- splits --------------------------------- */
+
+/**
+ * The split partner paid you back. Recorded as a refund in the bill's category, so your own spend
+ * on that bill drops to your share.
+ */
+export async function collectSplit(paymentId: string, baseCurrency: string, amountMinor?: number): Promise<void> {
+  const p = await db.billPayments.get(paymentId)
+  if (!p || !p.splitAmount || p.splitCollectedAt) return
+  const bill = await db.bills.get(p.billId)
+  const amount = amountMinor ?? p.splitAmount
+  const at = nowISO()
+  const txn = await addTransaction(
+    {
+      date: todayISO(),
+      amount,
+      currency: p.currency,
+      fxRate: p.fxRate,
+      type: 'refund',
+      categoryId: bill?.categoryId ?? DEFAULT_CATEGORY_IDS.other,
+      merchant: p.splitName ?? 'Split',
+      note: `Share of ${bill?.name ?? 'bill'} (${p.paidDate})`,
+      source: 'bill',
+      categorySource: 'manual',
+      refundOf: p.txnId,
+    },
+    baseCurrency,
+  )
+  await db.billPayments.put({ ...p, splitCollectedAt: at, splitTxnId: txn.id, updatedAt: at })
+}
+
+/** Nothing to collect for this payment (e.g. they paid the provider directly). */
+export async function waiveSplit(paymentId: string): Promise<void> {
+  const p = await db.billPayments.get(paymentId)
+  if (!p) return
+  await db.billPayments.put({ ...p, splitAmount: 0, updatedAt: nowISO() })
+}
+
+/* --------------------------------- autopay --------------------------------- */
+
+let reconciling: Promise<number> | null = null
+
+/**
+ * Autopay bills are paid by the bank on their due date, so record those payments (and the matching
+ * expense) automatically instead of letting the bill show as overdue. Each one is flagged for the
+ * user to confirm the deducted amount. Ids are deterministic, so running this twice (or on two
+ * synced devices) never double-records a payment.
+ */
+export function reconcileAutopay(baseCurrency: string, today: ISODate = todayISO()): Promise<number> {
+  if (reconciling) return reconciling
+  reconciling = (async () => {
+    let created = 0
+    const [bills, payments, tombstones] = await Promise.all([
+      db.bills.toArray(),
+      db.billPayments.toArray(),
+      db.tombstones.where('table').equals('billPayments').primaryKeys(),
+    ])
+    const deleted = new Set((tombstones as string[]).map((k) => k.slice('billPayments:'.length)))
+    const all = [...payments]
+    for (const bill of bills) {
+      if (!bill.autoPay || !bill.active || bill.archived) continue
+      for (let guard = 0; guard < 24; guard++) {
+        const schedule = predictBill(bill, all, today)
+        if (!schedule.nextDue || schedule.nextDue > today) break
+        const due = schedule.nextDue
+        const paymentId = `bp_auto_${bill.id}_${due}`
+        // The user removed this auto payment — respect that and leave the bill overdue.
+        if (deleted.has(paymentId) || all.some((p) => p.id === paymentId)) break
+        const at = nowISO()
+        // Always record autopay as its own entry. If you also logged it yourself, the duplicate check
+        // flags the pair and you decide which to keep — nothing is merged or removed automatically.
+        const txnId = `t_auto_${bill.id}_${due}`
+        await db.transactions.put({
+          id: txnId,
+          date: due,
+          amount: bill.amount,
+          currency: bill.currency,
+          fxRate: bill.fxRate,
+          baseAmount: toBaseMinor(bill.amount, bill.currency, bill.fxRate, baseCurrency),
+          type: 'expense',
+          categoryId: bill.categoryId,
+          merchant: bill.merchant || bill.name,
+          note: 'Autopay · check the deducted amount',
+          source: 'bill',
+          categorySource: 'manual',
+          createdAt: at,
+          updatedAt: at,
+        })
+        const payment: BillPayment = {
+          id: paymentId,
+          billId: bill.id,
+          paidDate: due,
+          currency: bill.currency,
+          fxRate: bill.fxRate,
+          amount: bill.amount,
+          baseAmount: toBaseMinor(bill.amount, bill.currency, bill.fxRate, baseCurrency),
+          txnId,
+          autoRecorded: true,
+          verified: false,
+          ...splitFields(bill, bill.amount),
+          createdAt: at,
+          updatedAt: at,
+        }
+        await db.billPayments.put(payment)
+        all.push(payment)
+        created++
+      }
+    }
+    return created
+  })().finally(() => {
+    reconciling = null
   })
+  return reconciling
+}
+
+/** Confirm (optionally correcting) the amount an autopay actually took. */
+export async function verifyPayment(id: string, baseCurrency: string, amountMinor?: number): Promise<void> {
+  const p = await db.billPayments.get(id)
+  if (!p) return
+  const at = nowISO()
+  const amount = amountMinor ?? p.amount
+  const baseAmount = toBaseMinor(amount, p.currency, p.fxRate, baseCurrency)
+  const bill = await db.bills.get(p.billId)
+  const resplit = bill && !p.splitCollectedAt ? splitFields(bill, amount) : {}
+  await db.billPayments.put({ ...p, amount, baseAmount, ...resplit, verified: true, updatedAt: at })
+  if (p.txnId) {
+    const t = await db.transactions.get(p.txnId)
+    if (t) {
+      await db.transactions.put({
+        ...t,
+        amount,
+        baseAmount,
+        note: amount === p.amount ? 'Autopay · verified' : 'Autopay · amount corrected',
+        updatedAt: at,
+      })
+    }
+  }
 }
 
 /* ---------------------------------- exports -------------------------------- */
@@ -1005,7 +1295,7 @@ export async function seedSampleData(): Promise<void> {
   }
 
   // Shopping / health / fun
-  push(addDays(today, -9), 'Uniqlo', 'cat_shopping', 89.9)
+  push(addDays(today, -9), 'Uniqlo', 'cat_shopping', 89.9, 'expense', 'Jacket + 2 tees')
   push(addDays(today, -21), 'Amazon', 'cat_shopping', 43.2)
   push(addDays(today, -6), 'CVS Pharmacy', 'cat_health', 24.6)
   push(addDays(today, -15), 'Cinema 9', 'cat_entertainment', 28)
@@ -1049,7 +1339,8 @@ export async function seedSampleData(): Promise<void> {
   ]
 
   for (const def of billDefs) {
-    const anchor = addMonths(today, -4)
+    // Anchor where the payment history starts so quarterly bills line up with their payments.
+    const anchor = addMonths(today, def.frequency === 'quarterly' ? -3 : -4)
     const bill: Bill = {
       id: uid('demo_b_'),
       name: def.name,
@@ -1065,6 +1356,7 @@ export async function seedSampleData(): Promise<void> {
       autoPay: def.autoPay,
       leadDays: def.autoPay ? 2 : 5,
       active: true,
+      split: def.name === 'Rent' ? { name: 'Roommate', mode: 'percent', value: 50 } : undefined,
       createdAt: at,
       updatedAt: at,
     }
@@ -1086,6 +1378,7 @@ export async function seedSampleData(): Promise<void> {
         fxRate: 1,
         baseAmount: bill.amount,
         createdAt: at,
+        updatedAt: at,
       })
     }
   }
@@ -1099,6 +1392,13 @@ export async function seedSampleData(): Promise<void> {
     { id: uid('demo_bg_'), categoryId: 'cat_shopping', amount: Math.round(220 * unit), rollover: true, period: 'cycle', createdAt: at, updatedAt: at },
     { id: uid('demo_bg_'), categoryId: 'cat_subscriptions', amount: Math.round(120 * unit), rollover: false, period: 'cycle', createdAt: at, updatedAt: at },
   ]
+
+  // Show off a partial refund in the demo.
+  const uniqlo = txns.find((t) => t.merchant === 'Uniqlo')
+  if (uniqlo) {
+    const back = Math.round(29.9 * unit)
+    txns.push({ ...uniqlo, id: uid('demo_t_'), date: addDays(today, -4), amount: back, baseAmount: back, type: 'refund', refundOf: uniqlo.id, note: 'Returned the tees' })
+  }
 
   await db.transaction('rw', [db.transactions, db.bills, db.billPayments, db.budgets, db.settings], async () => {
     await db.transactions.bulkPut(txns)
@@ -1118,17 +1418,28 @@ export async function seedSampleData(): Promise<void> {
 }
 
 export async function clearDemoData(): Promise<void> {
+  const demo = (rows: { id: string }[]) => rows.filter((r) => r.id.startsWith('demo_')).map((r) => r.id)
   const [txns, bills, payments, budgets] = await Promise.all([
     db.transactions.toArray(),
     db.bills.toArray(),
     db.billPayments.toArray(),
     db.budgets.toArray(),
   ])
-  await db.transaction('rw', [db.transactions, db.bills, db.billPayments, db.budgets], async () => {
-    await db.transactions.bulkDelete(txns.filter((t) => t.id.startsWith('demo_')).map((t) => t.id))
-    await db.bills.bulkDelete(bills.filter((b) => b.id.startsWith('demo_')).map((b) => b.id))
-    await db.billPayments.bulkDelete(payments.filter((p) => p.id.startsWith('demo_')).map((p) => p.id))
-    await db.budgets.bulkDelete(budgets.filter((b) => b.id.startsWith('demo_')).map((b) => b.id))
+  // Auto-recorded autopay entries for demo bills are demo data too.
+  const demoBillIds = new Set(demo(bills))
+  const autoPayments = payments.filter((p) => demoBillIds.has(p.billId) && !p.id.startsWith('demo_'))
+  const ids = {
+    transactions: [...demo(txns), ...autoPayments.map((p) => p.txnId).filter((x): x is string => Boolean(x))],
+    bills: demo(bills),
+    billPayments: [...demo(payments), ...autoPayments.map((p) => p.id)],
+    budgets: demo(budgets),
+  }
+  await db.transaction('rw', [db.transactions, db.bills, db.billPayments, db.budgets, db.tombstones], async () => {
+    for (const [name, list] of Object.entries(ids) as [SyncTable, string[]][]) await recordDeletion(name, list)
+    await db.transactions.bulkDelete(ids.transactions)
+    await db.bills.bulkDelete(ids.bills)
+    await db.billPayments.bulkDelete(ids.billPayments)
+    await db.budgets.bulkDelete(ids.budgets)
   })
 }
 

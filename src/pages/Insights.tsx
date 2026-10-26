@@ -21,6 +21,7 @@ import { byMerchant, changePct, monthlySeries, totals, txnRange, weekdayPattern 
 import { formatMoney } from '../lib/money'
 import { Badge, Button, Card, EmptyState, Input, Markdown, SectionTitle, Segmented, Spinner, cn } from '../components/ui'
 import { Heatmap, MerchantBars, MonthlyBars, WeekdayBars } from '../components/charts'
+import { ReportExport } from '../components/ReportExport'
 
 type RangeKey = 'cycle' | 'last' | '30' | '90'
 
@@ -180,6 +181,9 @@ export function Insights() {
 
   return (
     <div className="space-y-3.5">
+      <div className="flex justify-end">
+        <ReportExport variant="soft" />
+      </div>
       <Card className="space-y-3">
         <div className="flex items-center justify-between gap-2">
           <p className="text-[13px] font-semibold text-ink">Period</p>

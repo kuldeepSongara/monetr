@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   BookOpen,
+  MoreHorizontal,
   Briefcase,
   CalendarClock,
   Download,
@@ -30,6 +31,13 @@ const NAV = [
   { to: '/features', label: 'Guide', icon: BookOpen, title: 'Features Guide' },
 ] as const
 
+/** Phone bottom bar: four main tabs plus “More” — eight tabs don't fit in one row. */
+const MOBILE_PRIMARY = ['/', '/transactions', '/bills', '/budgets'] as const
+const MOBILE_MORE = [
+  ...NAV.filter((n) => !(MOBILE_PRIMARY as readonly string[]).includes(n.to)),
+  { to: '/settings', label: 'Settings', icon: SettingsIcon, title: 'Settings' },
+] as const
+
 export function BrandMark({ size = 36 }: { size?: number }) {
   return (
     <div
@@ -50,6 +58,8 @@ export function Shell() {
   const location = useLocation()
   const [editorOpen, setEditorOpen] = useState(false)
   const [seed, setSeed] = useState<EditorSeed | null>(null)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreActive = MOBILE_MORE.some((m) => m.to === location.pathname)
 
   const current = NAV.find((n) => n.to === location.pathname)
   const title = current?.title ?? (location.pathname === '/settings' ? 'Settings' : 'Monetr')
@@ -81,6 +91,7 @@ export function Shell() {
             <NavLink
               key={item.to}
               to={item.to}
+              end={item.to === '/'}
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition',
@@ -173,7 +184,7 @@ export function Shell() {
       <button
         type="button"
         onClick={() => openAdd()}
-        className="fixed bottom-[calc(72px+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-white shadow-[0_16px_40px_-12px_rgb(var(--accent)/0.9)] transition active:scale-95 lg:hidden"
+        className={cn(moreOpen && 'hidden', 'fixed bottom-[calc(76px+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-white shadow-[0_16px_40px_-12px_rgb(var(--accent)/0.9)] transition active:scale-95 lg:hidden')}
         aria-label="Add transaction"
       >
         <Plus className="h-6 w-6" />
@@ -182,12 +193,13 @@ export function Shell() {
       {/* Mobile bottom nav */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line/70 bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden">
         <div className="mx-auto grid max-w-md grid-cols-5 px-1.5 py-1.5">
-          {NAV.map((item) => (
+          {NAV.filter((n) => (MOBILE_PRIMARY as readonly string[]).includes(n.to)).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
-              className={({ isActive }) => cn('nav-item relative', isActive && 'nav-item-active')}
+              onClick={() => setMoreOpen(false)}
+              className={({ isActive }) => cn('nav-item relative', isActive && !moreOpen && 'nav-item-active')}
             >
               <item.icon className="h-[21px] w-[21px]" strokeWidth={2} />
               <span>{item.label}</span>
@@ -198,8 +210,45 @@ export function Shell() {
               ) : null}
             </NavLink>
           ))}
+          <button
+            type="button"
+            onClick={() => setMoreOpen((v) => !v)}
+            className={cn('nav-item', (moreOpen || moreActive) && 'nav-item-active')}
+            aria-expanded={moreOpen}
+            aria-label="More"
+          >
+            <MoreHorizontal className="h-[21px] w-[21px]" strokeWidth={2} />
+            <span>More</span>
+          </button>
         </div>
       </nav>
+
+      {moreOpen ? (
+        <div className="fixed inset-0 z-[29] lg:hidden" onClick={() => setMoreOpen(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div
+            className="absolute inset-x-2 bottom-[calc(64px+env(safe-area-inset-bottom))] grid grid-cols-3 gap-1.5 rounded-2xl border border-line/70 bg-surface p-2 shadow-card"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {MOBILE_MORE.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                onClick={() => setMoreOpen(false)}
+                className={({ isActive }) =>
+                  cn(
+                    'flex flex-col items-center gap-1 rounded-xl px-2 py-3 text-[11px] font-medium transition',
+                    isActive ? 'bg-accent/12 text-accent' : 'text-muted hover:bg-surface2 hover:text-ink',
+                  )
+                }
+              >
+                <item.icon className="h-5 w-5" />
+                {item.title === 'Features Guide' ? 'Guide' : item.title}
+              </NavLink>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <TransactionEditor open={editorOpen} onClose={() => setEditorOpen(false)} seed={seed} />
     </div>

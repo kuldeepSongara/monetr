@@ -22,7 +22,7 @@ import {
   todayISO,
   type Range,
 } from './dates'
-import { minorFactor } from './money'
+import { formatMoney, minorFactor } from './money'
 import { clamp, mean, median, normalizeMerchant, pct, stdDev, sum } from './utils'
 
 export interface Totals {
@@ -30,6 +30,11 @@ export interface Totals {
   income: number
   net: number
   count: number
+}
+
+/** Effect of a transaction on spending: expenses add, refunds subtract, everything else is 0. */
+export function spendDelta(t: Txn): number {
+  return t.type === 'expense' ? t.baseAmount : t.type === 'refund' ? -t.baseAmount : 0
 }
 
 export function txnRange(txns: Txn[], range: Range): Txn[] {
@@ -40,9 +45,10 @@ export function totals(txns: Txn[]): Totals {
   let expense = 0
   let income = 0
   for (const t of txns) {
-    if (t.type === 'expense') expense += t.baseAmount
-    else income += t.baseAmount
+    if (t.type === 'expense' || t.type === 'refund') expense += spendDelta(t)
+    else if (t.type === 'income') income += t.baseAmount
   }
+  // Refunds reduce spending. Transfers between your own accounts are listed but never counted as spend or income.
   return { expense, income, net: income - expense, count: txns.length }
 }
 
@@ -59,9 +65,10 @@ export interface CategoryTotal {
 export function byCategory(txns: Txn[], categories: Category[], type: 'expense' | 'income' = 'expense'): CategoryTotal[] {
   const map = new Map<string, { total: number; count: number }>()
   for (const t of txns) {
-    if (t.type !== type) continue
+    const isRefund = type === 'expense' && t.type === 'refund'
+    if (t.type !== type && !isRefund) continue
     const prev = map.get(t.categoryId) ?? { total: 0, count: 0 }
-    map.set(t.categoryId, { total: prev.total + t.baseAmount, count: prev.count + 1 })
+    map.set(t.categoryId, { total: prev.total + (isRefund ? -t.baseAmount : t.baseAmount), count: prev.count + (isRefund ? 0 : 1) })
   }
   const grand = sum([...map.values()].map((v) => v.total))
   const catMap = new Map(categories.map((c) => [c.id, c]))
@@ -91,11 +98,11 @@ export interface MerchantTotal {
 export function byMerchant(txns: Txn[], limit = 8): MerchantTotal[] {
   const map = new Map<string, MerchantTotal>()
   for (const t of txns) {
-    if (t.type !== 'expense') continue
+    if (t.type !== 'expense' && t.type !== 'refund') continue
     const key = t.merchant || 'Unknown'
     const prev = map.get(key) ?? { merchant: key, total: 0, count: 0, lastDate: t.date }
-    prev.total += t.baseAmount
-    prev.count += 1
+    prev.total += spendDelta(t)
+    if (t.type === 'expense') prev.count += 1
     if (t.date > prev.lastDate) prev.lastDate = t.date
     map.set(key, prev)
   }
@@ -117,8 +124,8 @@ export function dailySeries(txns: Txn[], range: Range): DayPoint[] {
   for (const t of txns) {
     if (t.date < range.start || t.date > range.end) continue
     const prev = byDay.get(t.date) ?? { expense: 0, income: 0 }
-    if (t.type === 'expense') prev.expense += t.baseAmount
-    else prev.income += t.baseAmount
+    if (t.type === 'expense' || t.type === 'refund') prev.expense += spendDelta(t)
+    else if (t.type === 'income') prev.income += t.baseAmount
     byDay.set(t.date, prev)
   }
   const total = daysBetween(range.start, range.end)
@@ -153,8 +160,8 @@ export function monthlySeries(txns: Txn[], months = 6, today: ISODate = todayISO
     const k = monthKey(t.date)
     if (!keys.includes(k)) continue
     const prev = map.get(k) ?? { expense: 0, income: 0 }
-    if (t.type === 'expense') prev.expense += t.baseAmount
-    else prev.income += t.baseAmount
+    if (t.type === 'expense' || t.type === 'refund') prev.expense += spendDelta(t)
+    else if (t.type === 'income') prev.income += t.baseAmount
     map.set(k, prev)
   }
   return keys.map((k) => {
@@ -175,13 +182,13 @@ export function weekdayPattern(txns: Txn[], weekStart: 0 | 1 = 1): WeekdayPoint[
   const buckets = new Map<number, { total: number; days: Set<string> }>()
   for (const d of order) buckets.set(d, { total: 0, days: new Set() })
   for (const t of txns) {
-    if (t.type !== 'expense') continue
+    if (t.type !== 'expense' && t.type !== 'refund') continue
     const [y, m, d] = t.date.split('-').map(Number)
     const wd = new Date(y, m - 1, d).getDay()
     const b = buckets.get(wd)
     if (!b) continue
-    b.total += t.baseAmount
-    b.days.add(t.date)
+    b.total += spendDelta(t)
+    if (t.type === 'expense') b.days.add(t.date)
   }
   return order.map((d) => {
     const b = buckets.get(d)!
@@ -192,8 +199,8 @@ export function weekdayPattern(txns: Txn[], weekStart: 0 | 1 = 1): WeekdayPoint[
 export function heatmap(txns: Txn[], range: Range): Map<ISODate, number> {
   const map = new Map<ISODate, number>()
   for (const t of txns) {
-    if (t.type !== 'expense' || t.date < range.start || t.date > range.end) continue
-    map.set(t.date, (map.get(t.date) ?? 0) + t.baseAmount)
+    if ((t.type !== 'expense' && t.type !== 'refund') || t.date < range.start || t.date > range.end) continue
+    map.set(t.date, (map.get(t.date) ?? 0) + spendDelta(t))
   }
   return map
 }
@@ -242,10 +249,10 @@ export function budgetRows(
     const range = periodFor(b.period, settings, today)
     const prevRange = shiftPeriod(range, -1, b.period === 'weekly')
     const inPeriod = (t: Txn, r: Range) =>
-      t.type === 'expense' && t.date >= r.start && t.date <= r.end && (b.categoryId === 'all' || t.categoryId === b.categoryId)
+      (t.type === 'expense' || t.type === 'refund') && t.date >= r.start && t.date <= r.end && (b.categoryId === 'all' || t.categoryId === b.categoryId)
 
-    const spent = sum(txns.filter((t) => inPeriod(t, range)).map((t) => t.baseAmount))
-    const prevSpent = sum(txns.filter((t) => inPeriod(t, prevRange)).map((t) => t.baseAmount))
+    const spent = sum(txns.filter((t) => inPeriod(t, range)).map(spendDelta))
+    const prevSpent = sum(txns.filter((t) => inPeriod(t, prevRange)).map(spendDelta))
     const rollover = b.rollover ? Math.min(b.amount, Math.max(0, b.amount - prevSpent)) : 0
     const limit = b.amount + rollover
     const remaining = limit - spent
@@ -310,8 +317,7 @@ export function computeSafeToSpend(
     basis = 'budgets'
   } else if (settings.monthlyAllowance > 0) {
     limit = settings.monthlyAllowance
-    const cycleTxns = txnRange(txns, range).filter((t) => t.type === 'expense')
-    spent = sum(cycleTxns.map((t) => t.baseAmount))
+    spent = sum(txnRange(txns, range).map(spendDelta))
     basis = 'allowance'
   }
 
@@ -368,8 +374,8 @@ export function detectAnomalies(
   const spendIn = (categoryId: string, range: Range) =>
     sum(
       txns
-        .filter((t) => t.type === 'expense' && t.categoryId === categoryId && t.date >= range.start && t.date <= range.end)
-        .map((t) => t.baseAmount),
+        .filter((t) => t.categoryId === categoryId && t.date >= range.start && t.date <= range.end)
+        .map(spendDelta),
     )
 
   const categoryIds = new Set(txns.filter((t) => t.type === 'expense').map((t) => t.categoryId))
@@ -387,8 +393,9 @@ export function detectAnomalies(
         kind: 'category-spike',
         severity: ratio >= 90 ? 'high' : ratio >= 45 ? 'medium' : 'low',
         title: `${cat?.name ?? 'Spending'} is up ${ratio}%`,
-        detail: `You've spent ${Math.round(current / unit)} so far this cycle vs your usual ${Math.round(
-          baseline / unit,
+        detail: `You've spent ${formatMoney(current, settings.currency)} so far this cycle vs your usual ${formatMoney(
+          Math.round(baseline),
+          settings.currency,
         )} by this point in the cycle.`,
         amount: diff,
         categoryId,
@@ -396,34 +403,8 @@ export function detectAnomalies(
     }
   }
 
-  // Duplicate-looking charges
-  const recent = txns.filter((t) => t.type === 'expense' && daysBetween(t.date, today) <= 14)
-  const seen = new Map<string, Txn[]>()
-  for (const t of recent) {
-    const key = `${normalizeMerchant(t.merchant)}|${Math.round(t.baseAmount / Math.max(1, unit / 100))}`
-    const arr = seen.get(key) ?? []
-    arr.push(t)
-    seen.set(key, arr)
-  }
-  for (const [, group] of seen) {
-    if (group.length < 2) continue
-    const sorted = group.sort((a, b) => a.date.localeCompare(b.date))
-    const close = sorted.some((t, i) => i > 0 && Math.abs(daysBetween(sorted[i - 1].date, t.date)) <= 3)
-    if (close && group[0].baseAmount >= 3 * unit) {
-      out.push({
-        id: `dup-${group[0].id}`,
-        kind: 'duplicate',
-        severity: 'medium',
-        title: `Possible duplicate: ${group[0].merchant}`,
-        detail: `${group.length} charges of about ${Math.round(group[0].baseAmount / unit)} within a few days.`,
-        amount: group[0].baseAmount,
-        date: group[0].date,
-      })
-    }
-  }
-
   // Unusually large single expenses
-  const expenses = txns.filter((t) => t.type === 'expense' && daysBetween(t.date, today) <= 90)
+  const expenses = txns.filter((t) => t.type === 'expense' && t.date <= today && daysBetween(t.date, today) <= 90)
   if (expenses.length >= 8) {
     const med = median(expenses.map((t) => t.baseAmount))
     const big = expenses
@@ -449,11 +430,26 @@ export function detectAnomalies(
 
 /* ------------------------------- subscriptions ------------------------------ */
 
+/** Gap ranges (days) that look like a real billing cadence. */
+const CADENCES: [number, number][] = [
+  [5, 9], // weekly
+  [12, 16], // biweekly
+  [26, 35], // monthly
+  [55, 65], // every two months
+  [84, 98], // quarterly
+  [170, 195], // half-yearly
+  [350, 380], // yearly
+]
+
+function isCadence(gap: number): boolean {
+  return CADENCES.some(([lo, hi]) => gap >= lo && gap <= hi)
+}
+
 export function detectSubscriptions(txns: Txn[], today: ISODate = todayISO()): SubscriptionCandidate[] {
   const groups = new Map<string, Txn[]>()
   for (const t of txns) {
-    if (t.type !== 'expense') continue
-    if (daysBetween(t.date, today) > 400) continue
+    if (t.type !== 'expense' || t.date > today) continue
+    if (daysBetween(t.date, today) > 800) continue
     const key = normalizeMerchant(t.merchant)
     if (!key) continue
     const arr = groups.get(key) ?? []
@@ -463,26 +459,30 @@ export function detectSubscriptions(txns: Txn[], today: ISODate = todayISO()): S
 
   const out: SubscriptionCandidate[] = []
   for (const [, group] of groups) {
-    if (group.length < 3) continue
-    const sorted = group.sort((a, b) => a.date.localeCompare(b.date))
+    if (group.length < 2) continue
+    const sorted = [...group].sort((a, b) => a.date.localeCompare(b.date))
     const amounts = sorted.map((t) => t.baseAmount)
     const med = median(amounts)
     if (med <= 0) continue
-
-    const consistent = amounts.filter((a) => Math.abs(a - med) / med <= 0.35)
-    if (consistent.length < 3) continue
 
     const gaps: number[] = []
     for (let i = 1; i < sorted.length; i++) gaps.push(daysBetween(sorted[i - 1].date, sorted[i].date))
     const recentGaps = gaps.slice(-6)
     const medGap = median(recentGaps)
-    if (medGap < 5 || medGap > 75) continue
+    if (!isCadence(medGap)) continue
+
+    const longCycle = medGap >= 80
+    // Short cycles need three charges; quarterly/yearly ones can be spotted from two, but only when
+    // the amounts are nearly identical (so two random Amazon orders a year apart don't qualify).
+    const tolerance = longCycle && sorted.length < 3 ? 0.12 : 0.35
+    const consistent = amounts.filter((a) => Math.abs(a - med) / med <= tolerance)
+    if (consistent.length < (longCycle ? 2 : 3)) continue
+
     const cv = medGap ? stdDev(recentGaps) / medGap : 1
     if (recentGaps.length >= 2 && cv > 0.4) continue
 
     const lastDate = sorted[sorted.length - 1].date
-    if (daysBetween(lastDate, today) > Math.max(50, medGap * 2.2)) continue
-    if (sorted.length < 3) continue
+    if (daysBetween(lastDate, today) > Math.max(50, medGap * 1.6)) continue
 
     const first = sorted[0]
     const last = sorted[sorted.length - 1]
@@ -501,7 +501,7 @@ export function detectSubscriptions(txns: Txn[], today: ISODate = todayISO()): S
     })
   }
 
-  return out.sort((a, b) => b.monthlyAmount - a.monthlyAmount).slice(0, 16)
+  return out.sort((a, b) => b.monthlyAmount - a.monthlyAmount).slice(0, 20)
 }
 
 export function sparklineData(txns: Txn[], days = 14, today: ISODate = todayISO()): number[] {

@@ -4,14 +4,15 @@ import { useApp } from '../store'
 import type { Txn } from '../types'
 import { TransactionEditor, type EditorSeed } from '../components/TransactionEditor'
 import { QuickAddBar } from '../components/QuickAddBar'
+import { DuplicateBanner } from '../components/DuplicateReview'
 import { CategorizeModal } from '../components/CategorizeModal'
 import { Badge, Button, Card, EmptyState, Input, Select, cn } from '../components/ui'
 import { addDays, formatDate, payCycle, shiftPeriod, type Range } from '../lib/dates'
 import { formatMoney } from '../lib/money'
-import { totals } from '../lib/analytics'
+import { spendDelta, totals } from '../lib/analytics'
 
 type RangeKey = 'cycle' | 'last' | '30' | '90' | 'all'
-type TypeKey = 'all' | 'expense' | 'income'
+type TypeKey = 'all' | 'expense' | 'income' | 'transfer' | 'refund'
 
 const RANGES: { key: RangeKey; label: string }[] = [
   { key: 'cycle', label: 'This cycle' },
@@ -22,7 +23,8 @@ const RANGES: { key: RangeKey; label: string }[] = [
 ]
 
 export function Transactions() {
-  const { transactions, categories, categoryMap, settings, today } = useApp()
+  const { transactions, categories, categoryMap, settings, today, duplicates } = useApp()
+  const dupIds = useMemo(() => new Set(duplicates.flatMap((d) => [d.a.id, d.b.id])), [duplicates])
   const [q, setQ] = useState('')
   const [rangeKey, setRangeKey] = useState<RangeKey>('cycle')
   const [type, setType] = useState<TypeKey>('all')
@@ -58,6 +60,7 @@ export function Transactions() {
   }, [transactions, range, type, categoryId, q, categoryMap])
 
   const sums = totals(filtered)
+  const refundedIds = useMemo(() => new Set(transactions.filter((t) => t.refundOf).map((t) => t.refundOf as string)), [transactions])
 
   const groups = useMemo(() => {
     const map = new Map<string, Txn[]>()
@@ -77,6 +80,7 @@ export function Transactions() {
 
   return (
     <div className="space-y-3.5">
+      <DuplicateBanner />
       <QuickAddBar
         onSeed={(s) => {
           setSeed(s)
@@ -119,7 +123,7 @@ export function Transactions() {
             </button>
           ))}
           <span className="mx-1 w-px shrink-0 bg-line" />
-          {(['all', 'expense', 'income'] as TypeKey[]).map((t) => (
+          {(['all', 'expense', 'income', 'refund', 'transfer'] as TypeKey[]).map((t) => (
             <button
               key={t}
               type="button"
@@ -157,7 +161,7 @@ export function Transactions() {
       {groups.length ? (
         <div className="space-y-3">
           {groups.map(([date, items]) => {
-            const dayExpense = items.filter((t) => t.type === 'expense').reduce((s, t) => s + t.baseAmount, 0)
+            const dayExpense = items.reduce((s, t) => s + spendDelta(t), 0)
             return (
               <div key={date}>
                 <div className="mb-1.5 flex items-center justify-between px-1 text-[11px]">
@@ -185,6 +189,10 @@ export function Transactions() {
                           <span className="mt-0.5 flex items-center gap-1.5 truncate text-[10px] text-muted">
                             {cat?.name ?? 'Uncategorised'}
                             {t.categorySource === 'ai' ? <Badge tone="accent">AI</Badge> : null}
+                            {t.categorySource === 'rule' ? <Badge tone="neutral">rule</Badge> : null}
+                            {t.type === 'refund' ? <Badge tone="good">refund</Badge> : null}
+                            {dupIds.has(t.id) ? <Badge tone="warn">possible duplicate</Badge> : null}
+                            {refundedIds.has(t.id) ? <Badge tone="good">refunded</Badge> : null}
                             {t.source === 'bill' ? <Badge tone="neutral">bill</Badge> : null}
                             {t.currency !== currency ? <span>· {formatMoney(t.amount, t.currency)}</span> : null}
                             {t.note ? <span className="truncate">· {t.note}</span> : null}
@@ -193,10 +201,10 @@ export function Transactions() {
                         <span
                           className={cn(
                             'tnum shrink-0 text-[13px] font-semibold',
-                            t.type === 'income' ? 'text-good' : 'text-ink',
+                            t.type === 'income' || t.type === 'refund' ? 'text-good' : t.type === 'transfer' ? 'text-muted' : 'text-ink',
                           )}
                         >
-                          {t.type === 'income' ? '+' : '−'}
+                          {t.type === 'income' || t.type === 'refund' ? '+' : t.type === 'transfer' ? '↔ ' : '−'}
                           {formatMoney(t.baseAmount, currency)}
                         </span>
                       </button>

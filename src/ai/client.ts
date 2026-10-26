@@ -1,7 +1,7 @@
 import type { AIAttempt, AIProfile, ProfileHealth, Settings } from '../types'
 import { nowISO } from '../lib/dates'
 import { db, logAI, setMeta, setProfileHealth, updateSettings } from '../db/db'
-import { PROVIDERS, canUseProfile, profileLabel } from './providers'
+import { PROVIDERS, canUseProfile, profileLabel, supportsPdf, supportsVision } from './providers'
 
 export interface AICallOptions {
   prompt: string
@@ -9,6 +9,8 @@ export interface AICallOptions {
   json?: boolean
   /** data URLs (data:image/jpeg;base64,…) */
   images?: string[]
+  /** PDF data URLs (data:application/pdf;base64,…). Only Gemini, Claude and OpenAI accept these. */
+  pdfs?: string[]
   maxTokens?: number
   temperature?: number
   task: string
@@ -70,6 +72,40 @@ function shortError(body: string): string {
   return text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)
 }
 
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public retryAfterMs?: number,
+  ) {
+    super(message)
+  }
+}
+
+/** Overloaded / rate-limited / flaky — worth retrying or trying another model. */
+export function isTransient(err: unknown): boolean {
+  const status = err instanceof HttpError ? err.status : 0
+  if ([408, 429, 500, 502, 503, 504, 529].includes(status)) return true
+  const msg = err instanceof Error ? err.message : String(err)
+  return /overloaded|UNAVAILABLE|RESOURCE_EXHAUSTED|rate limit|quota|try again later|timed out/i.test(msg)
+}
+
+/** The model itself is unknown/unavailable for this key — try the next model, not a retry. */
+function isModelProblem(err: unknown): boolean {
+  const status = err instanceof HttpError ? err.status : 0
+  const msg = err instanceof Error ? err.message : ''
+  return status === 404 || /model.*(not found|does not exist|not supported|decommissioned)/i.test(msg)
+}
+
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    const t = setTimeout(resolve, ms)
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t)
+      reject(new Error('Cancelled'))
+    })
+  })
+
 async function postJson(
   url: string,
   headers: Record<string, string>,
@@ -90,7 +126,12 @@ async function postJson(
     })
     const text = await res.text()
     if (!res.ok) {
-      throw new Error(`${res.status} ${res.statusText}${text ? ` · ${shortError(text)}` : ''}`.trim())
+      const retryAfter = Number(res.headers.get('retry-after'))
+      throw new HttpError(
+        `${res.status} ${res.statusText}${text ? ` · ${shortError(text)}` : ''}`.trim(),
+        res.status,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined,
+      )
     }
     try {
       return JSON.parse(text)
@@ -99,7 +140,8 @@ async function postJson(
     }
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`)
+      if (external?.aborted) throw new Error('Cancelled')
+      throw new HttpError(`Request timed out after ${Math.round(timeoutMs / 1000)}s`, 408)
     }
     if (err instanceof TypeError) {
       throw new Error('Network error or CORS blocked. Check the base URL, your connection, and whether this provider allows browser requests.')
@@ -129,25 +171,33 @@ interface AnthropicResponse {
 
 async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: number): Promise<string> {
   const parts: GooglePart[] = [{ text: opts.prompt }]
-  for (const img of opts.images ?? []) {
+  for (const img of [...(opts.images ?? []), ...(opts.pdfs ?? [])]) {
     const { mime, data } = dataUrlParts(img)
     parts.push({ inlineData: { mimeType: mime, data } })
   }
+
   const body: Record<string, unknown> = {
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      maxOutputTokens: opts.maxTokens ?? profile.maxTokens ?? 2048,
-      ...(opts.temperature !== undefined || profile.temperature !== undefined
-        ? { temperature: opts.temperature ?? profile.temperature }
-        : {}),
-      ...(opts.json ? { responseMimeType: 'application/json' } : {}),
-    },
+    contents: [{ parts }],
   }
-  if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] }
+
+  const genConfig: Record<string, unknown> = {}
+  const maxT = opts.maxTokens ?? profile.maxTokens
+  if (maxT) genConfig.maxOutputTokens = maxT
+  const temp = opts.temperature ?? profile.temperature
+  if (temp !== undefined) genConfig.temperature = temp
+  if (opts.json) genConfig.responseMimeType = 'application/json'
+  if (Object.keys(genConfig).length) body.generationConfig = genConfig
+
+  if (opts.system?.trim()) {
+    body.systemInstruction = { parts: [{ text: opts.system.trim() }] }
+  }
+
+  const base = trimUrl(profile.baseUrl) || 'https://generativelanguage.googleapis.com/v1beta'
+  const url = `${base}/models/${encodeURIComponent(profile.model || 'gemini-2.5-flash')}:generateContent`
 
   try {
     const data = (await postJson(
-      `${trimUrl(profile.baseUrl)}/models/${encodeURIComponent(profile.model)}:generateContent`,
+      url,
       { 'x-goog-api-key': profile.apiKey, 'Content-Type': 'application/json', ...(profile.extraHeaders ?? {}) },
       body,
       timeoutMs,
@@ -170,26 +220,27 @@ async function callGoogle(profile: AIProfile, opts: AICallOptions, timeoutMs: nu
       )
     }
     return text
-  } catch (err: any) {
-    if (err?.message?.includes('400')) {
-      throw new Error(`${err.message} — Check API key, model name, or base URL`)
-    }
-    if (err?.message?.includes('401') || err?.message?.includes('403')) {
-      throw new Error(`${err.message} — API key invalid or missing permissions`)
-    }
-    if (err?.message?.includes('404')) {
-      throw new Error(`${err.message} — Model not found. Try gemini-2.5-flash or check model name`)
-    }
+  } catch (err) {
+    if (!(err instanceof Error)) throw err
+    const status = err instanceof HttpError ? err.status : 0
+    const msg = err.message
+    // Add hints but keep the HttpError (status) so retry/failover logic still works.
+    if (status === 503 || /overloaded/i.test(msg)) err.message = `${msg} — Gemini is overloaded right now; Monetr retries and then tries your backup model/profile.`
+    else if (status === 429) err.message = `${msg} — Free-tier quota hit for this model.`
+    else if (status === 400) err.message = `${msg} — Check API key, model name, or base URL.`
+    else if (status === 401 || status === 403 || msg.includes('API_KEY')) err.message = `${msg} — API key invalid or missing.`
+    else if (status === 404) err.message = `${msg} — Model not found. Try gemini-2.5-flash or gemini-flash-latest.`
     throw err
   }
 }
 
 async function callOpenAI(profile: AIProfile, opts: AICallOptions, timeoutMs: number): Promise<string> {
   const content =
-    opts.images && opts.images.length
+    opts.images?.length || opts.pdfs?.length
       ? [
           { type: 'text', text: opts.prompt },
-          ...opts.images.map((url) => ({ type: 'image_url', image_url: { url } })),
+          ...(opts.images ?? []).map((url) => ({ type: 'image_url', image_url: { url } })),
+          ...(opts.pdfs ?? []).map((url, i) => ({ type: 'file', file: { filename: `statement-${i + 1}.pdf`, file_data: url } })),
         ]
       : opts.prompt
 
@@ -230,6 +281,10 @@ async function callAnthropic(profile: AIProfile, opts: AICallOptions, timeoutMs:
     const { mime, data } = dataUrlParts(img)
     content.push({ type: 'image', source: { type: 'base64', media_type: mime, data } })
   }
+  for (const pdf of opts.pdfs ?? []) {
+    const { data } = dataUrlParts(pdf)
+    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } })
+  }
 
   const body: Record<string, unknown> = {
     model: profile.model,
@@ -269,10 +324,39 @@ async function callProvider(profile: AIProfile, opts: AICallOptions): Promise<st
   if (!profile.model?.trim()) throw new Error('No model selected for this profile')
   if (def.requiresKey && !profile.apiKey?.trim()) throw new Error('Missing API key')
 
-  const timeoutMs = opts.timeoutMs ?? (opts.images?.length ? 90_000 : 60_000)
+  const timeoutMs = opts.timeoutMs ?? (opts.images?.length || opts.pdfs?.length ? 90_000 : 60_000)
   if (def.kind === 'google') return callGoogle(profile, opts, timeoutMs)
   if (def.kind === 'anthropic') return callAnthropic(profile, opts, timeoutMs)
   return callOpenAI(profile, opts, timeoutMs)
+}
+
+/**
+ * One profile, made resilient: retry transient errors (Gemini "model is overloaded", 429s) with
+ * backoff, then walk the profile's backup models (same key — free quotas are per model) before the
+ * caller fails over to the next profile.
+ */
+async function callWithRecovery(profile: AIProfile, opts: AICallOptions): Promise<{ text: string; model: string }> {
+  const models = [profile.model, ...(profile.fallbackModels ?? [])].map((m) => m.trim()).filter(Boolean)
+  const unique = [...new Set(models)]
+  let lastErr: unknown = new Error('No model configured')
+  for (const model of unique) {
+    const p = { ...profile, model }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return { text: await callProvider(p, opts), model }
+      } catch (err) {
+        lastErr = err
+        if (opts.signal?.aborted) throw err
+        if (isModelProblem(err)) break
+        if (!isTransient(err)) throw err
+        if (attempt < 2) {
+          const hinted = err instanceof HttpError ? err.retryAfterMs : undefined
+          await sleep(Math.min(8000, hinted ?? 1200 * 2 ** attempt + Math.random() * 400), opts.signal)
+        }
+      }
+    }
+  }
+  throw lastErr
 }
 
 async function recordHealth(profile: AIProfile, health: ProfileHealth): Promise<void> {
@@ -290,9 +374,19 @@ async function recordHealth(profile: AIProfile, health: ProfileHealth): Promise<
  */
 export async function callAI(opts: AICallOptions): Promise<AIResult> {
   const [settings, all] = await Promise.all([db.settings.get('settings'), db.profiles.toArray()])
-  const usable = all.filter(canUseProfile).sort((a, b) => a.priority - b.priority)
-  if (!usable.length) {
+  const ready = all.filter(canUseProfile).sort((a, b) => a.priority - b.priority)
+  if (!ready.length) {
     throw new AIError('No AI profile is ready. Add a key in Settings → AI profiles.')
+  }
+  // Only route image / PDF requests to profiles that can read them, so failover doesn't waste a
+  // call (and a cooldown) on a text-only model.
+  const usable = ready.filter((p) => (!opts.images?.length || supportsVision(p)) && (!opts.pdfs?.length || supportsPdf(p)))
+  if (!usable.length) {
+    throw new AIError(
+      opts.pdfs?.length
+        ? 'Reading PDFs needs a Gemini, Claude or OpenAI profile. Add one, or upload a screenshot / CSV instead.'
+        : 'Reading images needs a vision-capable profile (Gemini, OpenAI, Claude or OpenRouter).',
+    )
   }
 
   const preferred = settings?.activeProfileId ? usable.find((p) => p.id === settings.activeProfileId) : undefined
@@ -305,16 +399,17 @@ export async function callAI(opts: AICallOptions): Promise<AIResult> {
 
   const attempts: AIAttempt[] = []
   for (let i = 0; i < queue.length; i++) {
+    if (opts.signal?.aborted) throw new AIError('Cancelled', attempts)
     const profile = queue[i]
     const started = performance.now()
     try {
-      const text = await callProvider(profile, opts)
+      const { text, model: usedModel } = await callWithRecovery(profile, opts)
       const ms = Math.round(performance.now() - started)
       attempts.push({
         profileId: profile.id,
         profileName: profileLabel(profile),
         provider: profile.provider,
-        model: profile.model,
+        model: usedModel,
         ok: true,
         ms,
       })
@@ -326,7 +421,7 @@ export async function callAI(opts: AICallOptions): Promise<AIResult> {
         profileId: profile.id,
         profileName: profileLabel(profile),
         provider: profile.provider,
-        model: profile.model,
+        model: usedModel,
         ok: true,
         ms,
       })
@@ -347,7 +442,7 @@ export async function callAI(opts: AICallOptions): Promise<AIResult> {
         profileId: profile.id,
         profileName: profileLabel(profile),
         provider: profile.provider,
-        model: profile.model,
+        model: usedModel,
         attempts,
         ms,
       }

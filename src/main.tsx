@@ -2,6 +2,10 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import './index.css'
+import { capturePendingLink } from './lib/sync'
+
+// A scanned sync QR opens `#/link?code=…`; stash it before the router sees the URL.
+capturePendingLink()
 
 const container = document.getElementById('root')
 if (!container) throw new Error('Root element not found')

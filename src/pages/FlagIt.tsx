@@ -1,179 +1,435 @@
-import { useState } from 'react'
-import { Flag, Lightbulb, Upload, BrainCircuit } from 'lucide-react'
-import { Card, Button, SectionTitle, Input, Badge } from '../components/ui'
+import { useEffect, useMemo, useState } from 'react'
+import { BrainCircuit, Check, FileUp, Flag, Lightbulb, Trash2, Upload } from 'lucide-react'
 import { useApp } from '../store'
-import { db } from '../db/db'
-import { uid } from '../lib/utils'
-import { todayISO } from '../lib/dates'
-import { callAI } from '../ai/client'
+import type { FlagEntry, FlagIdea, TxnType } from '../types'
+import { addTransaction, db, learnRules, recordDeletion } from '../db/db'
+import { buildSpendContext } from '../ai/aiContext'
+import { extractStatement, flagReview, habitForecast, preSpendCheck, type StatementLine, type StatementSource } from '../ai/tasks'
+import { canUseProfile } from '../ai/providers'
+import { payCycle, shiftPeriod, daysBetween, formatDate } from '../lib/dates'
+import { CURRENCIES, formatMoney, minorFactor, toMinor } from '../lib/money'
+import { fileToDataUrl } from '../lib/image'
+import { computeHolding, portfolioTotals } from '../lib/investments'
+import { findDuplicate, ruleCategory, suggestedFxRate } from '../lib/suggest'
+import { pickFile, uid } from '../lib/utils'
+import { parseStatementCsv } from '../lib/csvImport'
+import { Badge, Button, Card, Field, Input, Markdown, SectionTitle, Select, cn } from '../components/ui'
+
+type Tab = 'flags' | 'pre' | 'habits' | 'import'
+
+interface ReviewRow extends StatementLine {
+  key: string
+  include: boolean
+  duplicateOf?: string
+}
 
 export default function FlagIt() {
-  const { notify, profiles, refresh } = useApp()
-  const [tab, setTab] = useState<'flags' | 'pre' | 'habits' | 'import'>('flags')
+  const app = useApp()
+  const { notify, profiles, refresh, settings, transactions, categories, rules, today, currencyProfiles } = app
+  const base = settings.currency
+  const [tab, setTab] = useState<Tab>('flags')
+  const [flags, setFlags] = useState<FlagEntry[]>([])
+  const [ideas, setIdeas] = useState<FlagIdea[]>([])
   const [idea, setIdea] = useState({ title: '', price: '', url: '', notes: '' })
-  const [flags, setFlags] = useState<any[]>([])
-  const [ideas, setIdeas] = useState<any[]>([])
-  const [files, setFiles] = useState<File[]>([])
-  const [review, setReview] = useState<any[]>([])
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [review, setReview] = useState<ReviewRow[]>([])
+  const [fileName, setFileName] = useState('')
+  const [rates, setRates] = useState<Record<string, string>>({})
+  const aiReady = profiles.some(canUseProfile)
 
   async function load() {
     const [f, i] = await Promise.all([db.flags.toArray(), db.flagIdeas.toArray()])
-    setFlags(f.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)))
-    setIdeas(i.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)))
+    setFlags(f.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+    setIdeas(i.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
   }
 
-  async function analyzeWeekly() {
-    setBusy(true)
+  useEffect(() => {
+    void load()
+  }, [app.transactions])
+
+  /* ------------------------ context sent to the AI ----------------------- */
+  const context = useMemo(() => {
+    const unit = minorFactor(base)
+    const major = (m: number) => Math.round((m / unit) * 100) / 100
+    const range = payCycle(today, settings.payCycleStartDay)
+    const spend = buildSpendContext({
+      txns: transactions,
+      categories,
+      settings,
+      today,
+      range,
+      previousRange: shiftPeriod(range, -1, false),
+      rows: app.rows,
+      bills: app.bills,
+      schedules: app.schedules,
+      anomalies: app.anomalies,
+      subscriptions: app.subscriptions,
+      daysLeft: app.safe.daysLeft,
+    })
+    const recent = transactions.filter((t) => t.date <= today && daysBetween(t.date, today) <= 60)
+    const foreign = recent
+      .filter((t) => t.currency !== base && t.type === 'expense')
+      .slice(0, 25)
+      .map((t) => ({ date: t.date, merchant: t.merchant, amount: t.amount / minorFactor(t.currency), currency: t.currency, inBase: major(t.baseAmount) }))
+    const feeLines = recent
+      .filter((t) => t.categoryId === 'cat_fees' || /\b(fx|forex|foreign|conversion|intl|international)\b/i.test(`${t.merchant} ${t.note ?? ''}`))
+      .map((t) => ({ date: t.date, merchant: t.merchant, amount: major(t.baseAmount) }))
+    const holdings = app.investments.filter((i) => !i.archived).map((i) => computeHolding(i, app.investmentTxs, base, currencyProfiles))
+    const totals = portfolioTotals(holdings)
+    return {
+      ...spend,
+      safeToSpend: { perDay: major(app.safe.perDay), discretionaryLeft: major(app.safe.discretionary), billsReserved: major(app.safe.billsReserved) },
+      foreignCurrencySpend: foreign,
+      feeLines,
+      investments: holdings.length
+        ? {
+            totals: { cost: major(totals.cost), value: major(totals.value), unrealised: major(totals.unrealised), income: major(totals.income) },
+            holdings: holdings.map((h) => ({ name: h.investment.name, type: h.investment.type, currency: h.investment.currency, valueInBase: major(h.base.value), shareOfPortfolio: totals.value ? Math.round((h.base.value / totals.value) * 100) : 0 })),
+          }
+        : undefined,
+    }
+  }, [app, transactions, categories, settings, today, base, currencyProfiles])
+
+  async function runReview(kind: 'weekly' | 'habits') {
+    setBusy(kind)
     try {
-      const res = await callAI({ task: 'digest', prompt: 'Analyze recent spending and investments. Flag anything unusual, suggest ways to save, highlight forex fees, suggest better alternatives where relevant. Be specific.' } as any)
-      await db.flags.put({ id: uid('flg_'), kind: 'weekly', status: 'open', title: 'AI Weekly Review', body: res.text, createdAt: new Date().toISOString() })
+      const { text } = kind === 'weekly' ? await flagReview(context, base) : await habitForecast(context, base)
+      const now = new Date().toISOString()
+      await db.flags.put({ id: uid('flg_'), kind, status: 'open', title: kind === 'weekly' ? `Review · ${formatDate(today, 'medium')}` : `Habits · ${formatDate(today, 'medium')}`, body: text, createdAt: now, updatedAt: now })
       await load()
-      notify('Review generated', 'success')
-    } catch(e:any){ notify(e.message,'error') } finally { setBusy(false) }
+      await refresh()
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'AI request failed', 'error')
+    } finally {
+      setBusy(null)
+    }
   }
 
-  async function addIdea() {
-    if(!idea.title) return
-    setBusy(true)
+  async function checkIdea() {
+    if (!idea.title.trim()) return notify('What are you thinking of buying?', 'error')
+    setBusy('pre')
     try {
-      const res = await callAI({ task: 'categorize', prompt: `Find better prices/options for: ${idea.title} price:${idea.price} url:${idea.url}. Check common stores, deals, card benefits if relevant. Suggest concrete alternatives with reasoning.` } as any)
-      await db.flagIdeas.put({ id: uid('f_'), status: 'open', ...idea, analysis: res.text, createdAt: new Date().toISOString() })
-      setIdea({ title:'',price:'',url:'',notes:'' })
+      const words = idea.title.toLowerCase().split(/\W+/).filter((w) => w.length >= 4)
+      const similar = transactions
+        .filter((t) => t.type === 'expense' && words.some((w) => `${t.merchant} ${t.note ?? ''}`.toLowerCase().includes(w)))
+        .slice(0, 10)
+        .map((t) => ({ date: t.date, merchant: t.merchant, amount: t.baseAmount / minorFactor(base), note: t.note }))
+      const { text } = await preSpendCheck(idea, { ...context, similarPastPurchases: similar }, base)
+      const now = new Date().toISOString()
+      await db.flagIdeas.put({ id: uid('idea_'), status: 'open', ...idea, analysis: text, createdAt: now, updatedAt: now })
+      setIdea({ title: '', price: '', url: '', notes: '' })
       await load()
-      notify('Flagged with AI suggestions', 'success')
-    } catch(e:any){ notify(e.message,'error') } finally { setBusy(false) }
+      await refresh()
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'AI request failed', 'error')
+    } finally {
+      setBusy(null)
+    }
   }
 
+  async function removeFlag(id: string, table: 'flags' | 'flagIdeas') {
+    await recordDeletion(table, [id])
+    await db.table(table).delete(id)
+    await load()
+    await refresh()
+  }
+
+  async function setIdeaStatus(i: FlagIdea, status: FlagIdea['status']) {
+    await db.flagIdeas.put({ ...i, status, updatedAt: new Date().toISOString() })
+    await load()
+    await refresh()
+  }
+
+  /* ---------------------------- statement import ------------------------- */
   async function scan() {
-    if(!files.length) return
-    setBusy(true)
+    const file = await pickFile('image/*,application/pdf,.pdf,.csv,.txt,text/plain,text/csv')
+    if (!file) return
+    setBusy('import')
+    setFileName(file.name)
     try {
-      const f = files[0]
-      let images: string[] = []
-      if(f.type.startsWith('image/')) {
-        const b64 = await new Promise<string>((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsDataURL(f)})
-        images=[b64]
-      }
-      const res = await callAI({ task: 'categorize', prompt: `Extract credit card/bank statement lines. Return JSON array: [{date, merchant, amount, currency, type:'expense'|'income', note, confidence}]. If year missing infer ${new Date().getFullYear()}. Only include clear transactions. Ask for clarification if ambiguous.`, images } as any)
-      let arr:any[]=[]
-      try{ arr = JSON.parse(res.text.match(/\[.*\]/s)?.[0]||'[]') }catch{}
-      setReview(arr.map((x:any,i:number)=>({...x, id: uid('imp_'), _i:i})))
-      await db.imports.put({ id: uid('imp_'), status:'review', count: arr.length, createdAt:new Date().toISOString() })
-      notify('Scanned. Review below', 'success')
-    } catch(e:any){ notify(e.message,'error') } finally { setBusy(false) }
+      let source: StatementSource
+      if (file.type.startsWith('image/')) source = { kind: 'image', dataUrl: await fileToDataUrl(file, 2000, 0.85) }
+      else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        if (file.size > 15 * 1024 * 1024) throw new Error('That PDF is over 15 MB. Export a shorter date range.')
+        source = { kind: 'pdf', dataUrl: await fileToDataUrl(file) }
+      } else source = { kind: 'text', text: await file.text() }
+
+      // CSV exports are read locally first — instant, free, and works when AI is down.
+      const local = source.kind === 'text' ? parseStatementCsv(source.text, base, rules, today) : null
+      if (!local && !aiReady) throw new Error('This file needs an AI profile to read. CSV exports with a header row work offline.')
+      const { lines } = local ? { lines: local } : await extractStatement(source, categories, base)
+      if (!lines.length) throw new Error('No transactions found in that file.')
+      const rows: ReviewRow[] = lines.map((l) => {
+        const ruled = l.type !== 'transfer' ? ruleCategory(l.merchant, rules) : undefined
+        const amountMinor = toMinor(l.amount, l.currency)
+        const dup = findDuplicate({ date: l.date, merchant: l.merchant, amount: amountMinor, currency: l.currency }, transactions)
+        return { ...l, categoryId: ruled ?? l.categoryId, key: uid('r_'), include: !dup && l.confidence >= 0.5, duplicateOf: dup?.id }
+      })
+      setReview(rows)
+      const foreign = [...new Set(rows.map((r) => r.currency).filter((c) => c !== base))]
+      setRates(Object.fromEntries(foreign.map((c) => [c, String(suggestedFxRate(c, base, transactions, currencyProfiles) ?? '')])))
+      await db.imports.put({ id: uid('imp_'), status: 'review', fileName: file.name, count: rows.length, createdAt: new Date().toISOString() })
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'Could not read that file', 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  function updateRow(key: string, patch: Partial<ReviewRow>) {
+    setReview((rows) => rows.map((r) => (r.key === key ? { ...r, ...patch } : r)))
   }
 
   async function commit() {
-    const { addTransaction } = await import('../db/db')
-    const { useApp } = await import('../store')
-    // get base currency from store context not directly available; use first profile/settings via db
-    const st = await db.settings.toArray()
-    const base = st[0]?.currency || 'USD'
-    for(const r of review) {
-      if(!r.merchant || !r.amount) continue
-      await addTransaction({ date: r.date || todayISO(), amount: Number(r.amount), currency: r.currency||base, type: r.type||'expense', categoryId: 'cat_other', merchant: r.merchant, note: r.note, source:'import' }, base)
+    const chosen = review.filter((r) => r.include)
+    if (!chosen.length) return notify('Tick at least one row to import', 'error')
+    for (const cur of new Set(chosen.map((r) => r.currency))) {
+      if (cur !== base && !(Number(rates[cur]) > 0)) return notify(`Enter the ${cur} → ${base} rate first`, 'error')
     }
-    setReview([])
-    await refresh()
-    notify('Imported to spendings', 'success')
+    setBusy('commit')
+    try {
+      for (const r of chosen) {
+        await addTransaction(
+          {
+            date: r.date,
+            // Statement amounts are in major units; storage is minor units (cents).
+            amount: toMinor(r.amount, r.currency),
+            currency: r.currency,
+            fxRate: r.currency === base ? 1 : Number(rates[r.currency]),
+            type: r.type,
+            categoryId: r.categoryId,
+            merchant: r.merchant,
+            note: r.note,
+            source: 'import',
+            categorySource: 'ai',
+          },
+          base,
+        )
+      }
+      await learnRules(chosen.filter((r) => r.type !== 'transfer').map((r) => ({ merchant: r.merchant, categoryId: r.categoryId })))
+      setReview([])
+      await refresh()
+      notify(`Imported ${chosen.length} transaction${chosen.length === 1 ? '' : 's'}`, 'success')
+    } catch (e) {
+      notify(e instanceof Error ? e.message : 'Import failed', 'error')
+    } finally {
+      setBusy(null)
+    }
   }
 
+  const catsFor = (type: TxnType) => categories.filter((c) => c.kind === (type === 'refund' ? 'expense' : type))
+  const reviewFlags = flags.filter((f) => f.kind === 'weekly')
+  const habitFlags = flags.filter((f) => f.kind === 'habits')
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 pb-10 pt-4 md:px-6">
-      <header>
-        <h1 className="text-xl font-semibold tracking-tight text-ink md:text-2xl">flagIt</h1>
-        <p className="text-sm text-muted">AI flags before/after spending, habits & smart import.</p>
-      </header>
-      <div className="flex gap-2 flex-wrap">
-        <Button size="sm" variant={tab==='flags'?'soft':'ghost'} onClick={()=>{setTab('flags'); load()}}><Flag className="h-3.5 w-3.5"/> Flags</Button>
-        <Button size="sm" variant={tab==='pre'?'soft':'ghost'} onClick={()=>setTab('pre')}><Lightbulb className="h-3.5 w-3.5"/> Pre-spend check</Button>
-        <Button size="sm" variant={tab==='habits'?'soft':'ghost'} onClick={()=>setTab('habits')}><BrainCircuit className="h-3.5 w-3.5"/> Habits & prevent</Button>
-        <Button size="sm" variant={tab==='import'?'soft':'ghost'} onClick={()=>setTab('import')}><Upload className="h-3.5 w-3.5"/> Statement import</Button>
+    <div className="space-y-3.5">
+      <p className="text-[11px] text-muted">AI checks on your real numbers: reviews, “should I buy this?”, habits and statement import.</p>
+      <div className="no-scrollbar flex gap-1.5 overflow-x-auto">
+        {(
+          [
+            ['flags', Flag, 'Review'],
+            ['pre', Lightbulb, 'Before you buy'],
+            ['habits', BrainCircuit, 'Habits'],
+            ['import', Upload, 'Statement import'],
+          ] as const
+        ).map(([id, Icon, label]) => (
+          <button key={id} type="button" onClick={() => setTab(id)} className={cn('chip flex items-center gap-1.5 whitespace-nowrap', tab === id && 'chip-active')}>
+            <Icon className="h-3.5 w-3.5" /> {label}
+          </button>
+        ))}
       </div>
 
-      {tab==='flags' && (
-        <Card className="card-pad">
-          <SectionTitle title="AI Reviews" sub="Weekly/daily analysis" action={<Button size="sm" onClick={analyzeWeekly} loading={busy}>Run AI review</Button>} />
-          <div className="mt-3 grid gap-2">
-            {flags.map(f=>(
-              <div key={f.id} className="rounded-xl border border-line/70 p-3">
-                <div className="flex items-center justify-between"><p className="font-medium text-ink">{f.title}</p><Badge tone="neutral">{f.kind}</Badge></div>
-                <p className="mt-1 text-sm text-muted whitespace-pre-wrap">{f.body}</p>
-              </div>
-            ))}
-            {flags.length===0 && <p className="text-xs text-muted">No flags yet. Run a review.</p>}
-          </div>
-        </Card>
-      )}
+      {!aiReady ? <p className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] text-warn">Add an AI profile in Settings → AI profiles to use flagIt.</p> : null}
 
-      {tab==='pre' && (
-        <Card className="card-pad">
-          <SectionTitle title="Flag before spending" sub="Get alternatives, deals, card benefits" />
-          <div className="mt-3 grid gap-2">
-            <Input placeholder="Product/item (e.g. MacBook Air M5)" value={idea.title} onChange={(e)=>setIdea({...idea,title:e.target.value})}/>
+      {tab === 'flags' ? (
+        <Card>
+          <SectionTitle
+            title="Spending review"
+            sub="Flags unusual spend, FX fees, subscriptions and budget pressure"
+            action={
+              <Button size="sm" onClick={() => runReview('weekly')} loading={busy === 'weekly'} disabled={!aiReady}>
+                Run review
+              </Button>
+            }
+          />
+          <FlagList items={reviewFlags} empty="No reviews yet. Run one — it uses this cycle's numbers." onDelete={(id) => removeFlag(id, 'flags')} />
+        </Card>
+      ) : null}
+
+      {tab === 'habits' ? (
+        <Card>
+          <SectionTitle
+            title="Habits & prevention"
+            sub="Predicts your next likely spends and cheaper swaps"
+            action={
+              <Button size="sm" onClick={() => runReview('habits')} loading={busy === 'habits'} disabled={!aiReady}>
+                Predict
+              </Button>
+            }
+          />
+          <FlagList items={habitFlags} empty="No predictions yet." onDelete={(id) => removeFlag(id, 'flags')} />
+        </Card>
+      ) : null}
+
+      {tab === 'pre' ? (
+        <Card>
+          <SectionTitle title="Before you buy" sub="Checks it against your budget, bills and similar past purchases" />
+          <div className="space-y-2">
+            <Input placeholder="What is it? (e.g. MacBook Air M4)" value={idea.title} onChange={(e) => setIdea({ ...idea, title: e.target.value })} />
             <div className="grid grid-cols-2 gap-2">
-              <Input placeholder="Price (e.g. 1799 CAD)" value={idea.price} onChange={(e)=>setIdea({...idea,price:e.target.value})}/>
-              <Input placeholder="Store URL (optional)" value={idea.url} onChange={(e)=>setIdea({...idea,url:e.target.value})}/>
+              <Input placeholder="Price (e.g. 1499 CAD)" value={idea.price} onChange={(e) => setIdea({ ...idea, price: e.target.value })} />
+              <Input placeholder="Store / link (optional)" value={idea.url} onChange={(e) => setIdea({ ...idea, url: e.target.value })} />
             </div>
-            <Input placeholder="Notes (optional)" value={idea.notes} onChange={(e)=>setIdea({...idea,notes:e.target.value})}/>
-            <Button onClick={addIdea} loading={busy}>Flag & find better options</Button>
+            <Input placeholder="Why do you want it? (optional)" value={idea.notes} onChange={(e) => setIdea({ ...idea, notes: e.target.value })} />
+            <Button className="w-full" onClick={checkIdea} loading={busy === 'pre'} disabled={!aiReady}>
+              Check it
+            </Button>
+            <p className="text-[10px] text-muted">The AI can't see live prices or browse — it tells you what's worth checking.</p>
           </div>
-          <div className="mt-4 grid gap-2">
-            {ideas.map(i=>(
+          <div className="mt-4 space-y-2">
+            {ideas.map((i) => (
               <div key={i.id} className="rounded-xl border border-line/70 p-3">
-                <div className="flex items-center justify-between"><p className="font-medium text-ink">{i.title}</p><Badge tone="neutral">{i.price||''}</Badge></div>
-                <p className="mt-1 text-sm text-muted whitespace-pre-wrap">{i.analysis}</p>
+                <div className="flex items-center gap-2">
+                  <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{i.title}</p>
+                  {i.price ? <Badge>{i.price}</Badge> : null}
+                  {i.status !== 'open' ? <Badge tone={i.status === 'bought' ? 'accent' : 'good'}>{i.status}</Badge> : null}
+                </div>
+                <div className="mt-2 text-[12px]">
+                  <Markdown text={i.analysis} />
+                </div>
+                <div className="mt-2 flex gap-1.5">
+                  {i.status === 'open' ? (
+                    <>
+                      <Button size="sm" variant="ghost" onClick={() => setIdeaStatus(i, 'skipped')}>
+                        <Check className="h-3 w-3" /> Skipped it
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setIdeaStatus(i, 'bought')}>
+                        Bought it
+                      </Button>
+                    </>
+                  ) : null}
+                  <Button size="sm" variant="plain" className="ml-auto px-1.5 text-muted" onClick={() => removeFlag(i.id, 'flagIdeas')} aria-label="Delete">
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
             ))}
           </div>
         </Card>
-      )}
+      ) : null}
 
-      {tab==='habits' && (
-        <Card className="card-pad">
-          <SectionTitle title="Spending habits & prevention" sub="Predict and suggest alternatives" action={<Button size="sm" onClick={async()=>{
-            setBusy(true)
-            try{
-              const res = await callAI({ task:'digest', prompt:'Look at spending history patterns. Predict next likely spend (timing/category/amount). Suggest concrete prevention ideas (home alternative, habit change) with actionable tips.' } as any)
-              await db.flags.put({ id: uid('hab_'), kind:'habits', status:'open', title:'Habit prediction', body: res.text, createdAt:new Date().toISOString() })
-              await load(); notify('Predicted','success')
-            }catch(e:any){notify(e.message,'error')}finally{setBusy(false)}
-          }} loading={busy}>Predict habits</Button>} />
-          <div className="mt-3 grid gap-2">
-            {flags.filter(f=>f.kind==='habits').map(f=>(
-              <div key={f.id} className="rounded-xl border border-line/70 p-3">
-                <p className="font-medium text-ink">{f.title}</p>
-                <p className="mt-1 text-sm text-muted whitespace-pre-wrap">{f.body}</p>
+      {tab === 'import' ? (
+        <Card>
+          <SectionTitle title="Import a statement" sub="Screenshot, PDF, CSV or text — review every line before it's added" />
+          <Button variant="soft" className="w-full" onClick={scan} loading={busy === 'import'}>
+            <FileUp className="h-4 w-4" /> Choose a statement file
+          </Button>
+          <p className="mt-1.5 text-[10px] text-muted">CSV exports are read on your device — no AI needed. PDFs need a Gemini, Claude or OpenAI profile; screenshots need a vision model.</p>
+
+          {review.length ? (
+            <div className="mt-4 space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-muted">
+                <span>
+                  {fileName} · {review.filter((r) => r.include).length} of {review.length} selected
+                </span>
+                <button type="button" className="underline underline-offset-2" onClick={() => setReview((rows) => rows.map((r) => ({ ...r, include: !rows.every((x) => x.include) })))}>
+                  Toggle all
+                </button>
               </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
-      {tab==='import' && (
-        <Card className="card-pad">
-          <SectionTitle title="Import from statement/screenshot" sub="Scan, review, edit before adding" />
-          <div className="mt-3 flex items-center gap-2">
-            <input type="file" accept="image/*,.pdf,.csv,.txt" onChange={(e)=>setFiles(Array.from(e.target.files||[]))} />
-            <Button onClick={scan} loading={busy}>Scan</Button>
-          </div>
-          {review.length>0 && (
-            <div className="mt-4 grid gap-2">
-              {review.map((r,i)=>(
-                <div key={r.id} className="grid grid-cols-5 gap-2 rounded-xl border border-line/70 p-2">
-                  <input className="input" value={r.date||''} onChange={(e)=>{const n=[...review];n[i]={...r,date:e.target.value};setReview(n)}}/>
-                  <input className="input" value={r.merchant||''} onChange={(e)=>{const n=[...review];n[i]={...r,merchant:e.target.value};setReview(n)}}/>
-                  <input className="input" value={r.amount||''} onChange={(e)=>{const n=[...review];n[i]={...r,amount:e.target.value};setReview(n)}}/>
-                  <input className="input" value={r.currency||''} onChange={(e)=>{const n=[...review];n[i]={...r,currency:e.target.value};setReview(n)}}/>
-                  <select className="input" value={r.type||'expense'} onChange={(e)=>{const n=[...review];n[i]={...r,type:e.target.value};setReview(n)}}><option value="expense">expense</option><option value="income">income</option></select>
+              {Object.keys(rates).length ? (
+                <div className="grid grid-cols-2 gap-2 rounded-xl border border-line/70 bg-surface2/40 p-2.5">
+                  {Object.keys(rates).map((cur) => (
+                    <Field key={cur} label={`1 ${cur} = ? ${base}`}>
+                      <Input value={rates[cur]} onChange={(e) => setRates({ ...rates, [cur]: e.target.value })} inputMode="decimal" />
+                    </Field>
+                  ))}
+                </div>
+              ) : null}
+
+              {review.map((r) => (
+                <div key={r.key} className={cn('rounded-xl border p-2.5', r.include ? 'border-line/70' : 'border-line/40 opacity-60')}>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" checked={r.include} onChange={(e) => updateRow(r.key, { include: e.target.checked })} className="h-4 w-4 accent-[rgb(var(--accent))]" aria-label="Include" />
+                    <Input className="h-8 flex-1 py-1 text-[12px]" value={r.merchant} onChange={(e) => updateRow(r.key, { merchant: e.target.value })} />
+                    <span className="tnum text-[12px] font-semibold text-ink">{formatMoney(toMinor(r.amount, r.currency), r.currency)}</span>
+                  </div>
+                  <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-5">
+                    <Input type="date" className="h-8 py-1 text-[11px]" value={r.date} onChange={(e) => updateRow(r.key, { date: e.target.value })} />
+                    <Input className="h-8 py-1 text-[11px]" inputMode="decimal" value={String(r.amount)} onChange={(e) => updateRow(r.key, { amount: Math.abs(Number(e.target.value)) || 0 })} />
+                    <Select className="h-8 py-1 text-[11px]" value={r.currency} onChange={(e) => {
+                      const cur = e.target.value
+                      updateRow(r.key, { currency: cur })
+                      if (cur !== base && rates[cur] === undefined) setRates({ ...rates, [cur]: String(suggestedFxRate(cur, base, transactions, currencyProfiles) ?? '') })
+                    }}>
+                      {CURRENCIES.map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.code}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      className="h-8 py-1 text-[11px]"
+                      value={r.type}
+                      onChange={(e) => {
+                        const type = e.target.value as TxnType
+                        updateRow(r.key, { type, categoryId: catsFor(type)[0]?.id ?? r.categoryId })
+                      }}
+                    >
+                      <option value="expense">Expense</option>
+                      <option value="income">Income</option>
+                      <option value="refund">Refund</option>
+                      <option value="transfer">Transfer</option>
+                    </Select>
+                    <Select className="col-span-2 h-8 py-1 text-[11px] sm:col-span-1" value={r.categoryId} onChange={(e) => updateRow(r.key, { categoryId: e.target.value })}>
+                      {catsFor(r.type).map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.emoji} {c.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  {r.duplicateOf || r.confidence < 0.5 ? (
+                    <p className="mt-1 text-[10px] font-medium text-warn">
+                      {r.duplicateOf ? 'Looks like it is already recorded. ' : ''}
+                      {r.confidence < 0.5 ? 'Low confidence — check this line.' : ''}
+                    </p>
+                  ) : null}
                 </div>
               ))}
-              <Button onClick={commit}>Add all to spendings</Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" className="flex-1" onClick={() => setReview([])}>
+                  Discard
+                </Button>
+                <Button className="flex-[2]" onClick={commit} loading={busy === 'commit'}>
+                  Add {review.filter((r) => r.include).length} to transactions
+                </Button>
+              </div>
             </div>
-          )}
+          ) : null}
         </Card>
-      )}
+      ) : null}
+    </div>
+  )
+}
+
+function FlagList({ items, empty, onDelete }: { items: FlagEntry[]; empty: string; onDelete: (id: string) => void }) {
+  if (!items.length) return <p className="text-[11px] text-muted">{empty}</p>
+  return (
+    <div className="space-y-2">
+      {items.map((f) => (
+        <div key={f.id} className="rounded-xl border border-line/70 p-3">
+          <div className="flex items-center gap-2">
+            <p className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{f.title}</p>
+            <button type="button" className="text-muted hover:text-bad" onClick={() => onDelete(f.id)} aria-label="Delete">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="mt-1.5 text-[12px]">
+            <Markdown text={f.body} />
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

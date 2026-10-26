@@ -33,10 +33,14 @@ export function Dashboard() {
     safe,
     anomalies,
     bills,
+    payments,
     schedules,
     today,
     categoryMap,
   } = useApp()
+  const toVerify = useMemo(() => payments.filter((p) => p.autoRecorded && !p.verified), [payments])
+  const { duplicates } = useApp()
+  const owedCount = useMemo(() => payments.filter((p) => p.splitAmount && !p.splitCollectedAt).length, [payments])
   const { openAdd } = useOutletContext<{ openAdd: (seed?: EditorSeed) => void }>()
   const [editId, setEditId] = useState<string | undefined>()
   const [editorOpen, setEditorOpen] = useState(false)
@@ -158,7 +162,7 @@ export function Dashboard() {
         )
 
       case 'alerts':
-        if (!alertBills.length && !anomalies.length) return null
+        if (!alertBills.length && !anomalies.length && !toVerify.length && !owedCount && !duplicates.length) return null
         return (
           <div className={cn(span.alerts, 'flex')} key={id}>
             <Card className="flex w-full flex-col border-line bg-surface2/30">
@@ -167,10 +171,40 @@ export function Dashboard() {
                 <p className="text-xs font-semibold text-ink">
                   {alertBills.length
                     ? `${alertBills.length} bill${alertBills.length > 1 ? 's' : ''} need attention`
-                    : 'Unusual spending detected'}
+                    : duplicates.length
+                      ? 'Possible double charge'
+                    : toVerify.length
+                      ? 'Check your autopay amounts'
+                      : owedCount
+                        ? 'Money to collect'
+                      : 'Unusual spending detected'}
                 </p>
               </div>
               <div className="space-y-1.5">
+                {duplicates.length ? (
+                  <Link to="/transactions" className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-ink/90">
+                      {duplicates.length} possible duplicate{duplicates.length > 1 ? 's' : ''} — charged twice?
+                    </span>
+                    <Badge tone="warn">Review</Badge>
+                  </Link>
+                ) : null}
+                {owedCount ? (
+                  <Link to="/bills" className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-ink/90">
+                      {owedCount} bill share{owedCount > 1 ? 's' : ''} to collect
+                    </span>
+                    <Badge tone="good">Collect</Badge>
+                  </Link>
+                ) : null}
+                {toVerify.length ? (
+                  <Link to="/bills" className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-ink/90">
+                      {toVerify.length} autopay payment{toVerify.length > 1 ? 's' : ''} recorded — confirm the amount taken
+                    </span>
+                    <Badge tone="accent">Review</Badge>
+                  </Link>
+                ) : null}
                 {alertBills.slice(0, 2).map(({ bill, schedule }) => (
                   <div key={bill.id} className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="truncate text-ink/90">
@@ -392,10 +426,10 @@ export function Dashboard() {
                         <p
                           className={cn(
                             'tnum shrink-0 text-[12px] font-semibold',
-                            t.type === 'income' ? 'text-good' : 'text-ink',
+                            t.type === 'income' || t.type === 'refund' ? 'text-good' : t.type === 'transfer' ? 'text-muted' : 'text-ink',
                           )}
                         >
-                          {t.type === 'income' ? '+' : '−'}
+                          {t.type === 'income' || t.type === 'refund' ? '+' : t.type === 'transfer' ? '↔ ' : '−'}
                           {formatMoney(t.baseAmount, currency)}
                         </p>
                       </button>

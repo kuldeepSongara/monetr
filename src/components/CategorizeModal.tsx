@@ -42,7 +42,10 @@ export function CategorizeModal({
     setError('')
     setModel('')
 
+    // Leave alone anything you categorised yourself (unless it's still in a catch-all bucket) and transfers.
     const batch = [...txns]
+      .filter((t) => t.type !== 'transfer')
+      .filter((t) => t.categorySource !== 'manual' || t.categoryId === 'cat_other' || t.categoryId === 'cat_other-income')
       .sort((a, b) => b.date.localeCompare(a.date))
       .slice(0, 60)
       .map((t) => ({
@@ -53,7 +56,10 @@ export function CategorizeModal({
         type: t.type,
       }))
 
-    if (!batch.length) return
+    if (!batch.length) {
+      setError('Nothing to categorise here — everything in this view was categorised by you already.')
+      return
+    }
 
     setLoading(true)
     categorizeTransactions(batch, categories, settings.currency)

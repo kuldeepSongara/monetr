@@ -1,4 +1,9 @@
 import { SyncPanel } from '../components/sync/SyncPanel'
+import { SecurityCard } from '../components/settings/SecurityCard'
+import { CurrencyProfilesCard } from '../components/settings/CurrencyProfilesCard'
+import { RulesCard } from '../components/settings/RulesCard'
+import { ReportExport } from '../components/ReportExport'
+import { setSyncState } from '../lib/sync'
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDown,
@@ -29,7 +34,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../store'
 import type { AIProfile, Category, CategoryKind, ProviderId, ThemeMode, WidgetId } from '../types'
-import { PROVIDERS, PROVIDER_ORDER, canUseProfile, createProfile, profileLabel } from '../ai/providers'
+import { FREE_BACKUPS, PROVIDERS, PROVIDER_ORDER, canUseProfile, createProfile, profileLabel } from '../ai/providers'
 import { testProfile, type TestResult } from '../ai/client'
 import {
   changeBaseCurrency,
@@ -75,7 +80,7 @@ interface FailoverInfo {
 }
 
 interface ConfirmState {
-  kind: 'delete-profile' | 'delete-category' | 'wipe' | 'replace-import' | 'remove-pin' | 'clear-demo'
+  kind: 'delete-profile' | 'delete-category' | 'wipe' | 'replace-import' | 'clear-demo'
   id?: string
   label?: string
 }
@@ -88,6 +93,7 @@ interface ProfileForm {
   model: string
   temperature: string
   maxTokens: string
+  fallbackModels: string
   extraHeaders: string
   enabled: boolean
 }
@@ -101,6 +107,7 @@ function formFromProfile(p: AIProfile): ProfileForm {
     model: p.model,
     temperature: p.temperature !== undefined ? String(p.temperature) : '',
     maxTokens: p.maxTokens !== undefined ? String(p.maxTokens) : '',
+    fallbackModels: (p.fallbackModels ?? []).join(', '),
     extraHeaders: p.extraHeaders && Object.keys(p.extraHeaders).length ? JSON.stringify(p.extraHeaders, null, 2) : '',
     enabled: p.enabled,
   }
@@ -128,6 +135,10 @@ function draftProfile(base: AIProfile, form: ProfileForm): AIProfile {
     model: form.model.trim(),
     temperature: Number.isFinite(temperature) ? temperature : undefined,
     maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined,
+    fallbackModels: form.fallbackModels
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean),
     extraHeaders,
     enabled: form.enabled,
   }
@@ -140,13 +151,13 @@ export function Settings() {
     categories,
     transactions,
     bills,
+    investments,
+    rules,
     logs,
     saveSettings,
     refresh,
     notify,
     usage,
-    setPin,
-    removePin,
     canInstall,
     installApp,
     loadSample,
@@ -170,12 +181,6 @@ export function Settings() {
   const [weekStart, setWeekStart] = useState<'0' | '1'>(String(settings.weekStart) as '0' | '1')
   const [leadDays, setLeadDays] = useState(String(settings.defaultBillLeadDays))
   const [moneyBusy, setMoneyBusy] = useState(false)
-
-  const [pinOpen, setPinOpen] = useState(false)
-  const [pin, setPinValue] = useState('')
-  const [pinConfirm, setPinConfirm] = useState('')
-  const [pinBusy, setPinBusy] = useState(false)
-  const [pinError, setPinError] = useState('')
 
   const [catModal, setCatModal] = useState<Category | null>(null)
   const [catForm, setCatForm] = useState({ name: '', emoji: '📦', color: '#64748B', kind: 'expense' as CategoryKind })
@@ -212,9 +217,9 @@ export function Settings() {
 
   /* --------------------------------- profiles -------------------------------- */
 
-  function openNewProfile() {
+  function openNewProfile(provider: ProviderId = 'google') {
     const priority = profiles.reduce((max, p) => Math.max(max, p.priority), -1) + 1
-    const base = createProfile('google', priority)
+    const base = createProfile(provider, priority)
     setProfileModal({ base, isNew: true })
     setForm(formFromProfile(base))
   }
@@ -232,6 +237,7 @@ export function Settings() {
       provider,
       baseUrl: def.baseUrl,
       model: def.defaultModel,
+      fallbackModels: (def.fallbackModels ?? []).join(', '),
       name: form.name && form.name !== PROVIDERS[form.provider].label ? form.name : def.label,
     })
   }
@@ -389,34 +395,6 @@ export function Settings() {
     if (next) notify('Bill alerts will appear while Monetr is open.', 'success')
   }
 
-  /* --------------------------------- security -------------------------------- */
-
-  function openPin() {
-    setPinValue('')
-    setPinConfirm('')
-    setPinError('')
-    setPinOpen(true)
-  }
-
-  async function savePin() {
-    if (!/^\d{4,8}$/.test(pin)) {
-      setPinError('Use 4–8 digits.')
-      return
-    }
-    if (pin !== pinConfirm) {
-      setPinError('The PINs do not match.')
-      return
-    }
-    setPinBusy(true)
-    try {
-      await setPin(pin)
-      setPinOpen(false)
-      notify(settings.lockEnabled ? 'PIN updated' : 'PIN lock enabled', 'success')
-    } finally {
-      setPinBusy(false)
-    }
-  }
-
   /* -------------------------------- categories ------------------------------- */
 
   function openCategory(category?: Category) {
@@ -477,6 +455,8 @@ export function Settings() {
         await refresh()
         notify('Category deleted', 'info')
       } else if (confirm.kind === 'wipe') {
+        // Unlink first so the wipe stays on this device and never propagates to linked devices.
+        setSyncState(null)
         await wipeAll()
         await refresh()
         notify('All local data deleted', 'info')
@@ -484,9 +464,6 @@ export function Settings() {
         const added = await pickAndImport('replace')
         await refresh()
         if (added !== null) notify(`Backup restored · ${added} transactions`, 'success')
-      } else if (confirm.kind === 'remove-pin') {
-        await removePin()
-        notify('PIN removed. Your data is unchanged.', 'info')
       } else if (confirm.kind === 'clear-demo') {
         await clearDemoData()
         await refresh()
@@ -534,20 +511,14 @@ export function Settings() {
     },
     wipe: {
       title: 'Delete everything on this device?',
-      body: 'Transactions, bills, budgets, AI profiles and settings will be erased. Export a backup first if you might need this data.',
+      body: 'Everything on this device is erased: transactions, bills, budgets, investments, flags, AI profiles and settings. Cloud sync is unlinked first, so your other devices keep their data. Export a backup first if this is your only copy.',
       label: 'Erase all data',
       tone: 'danger',
     },
     'replace-import': {
       title: 'Replace current data with a backup?',
-      body: 'Everything currently stored will be replaced by the contents of the backup file you choose.',
+      body: 'Everything currently stored (including investments and flags) is replaced by the backup you choose. Your lock and fingerprint settings stay as they are.',
       label: 'Choose backup',
-      tone: 'danger',
-    },
-    'remove-pin': {
-      title: 'Remove the PIN lock?',
-      body: 'Monetr will open without asking for a PIN. Your transactions and settings stay exactly as they are.',
-      label: 'Remove PIN',
       tone: 'danger',
     },
     'clear-demo': {
@@ -560,7 +531,7 @@ export function Settings() {
 
   return (
     <div className="space-y-3.5">
-        <SyncPanel notify={notify} refresh={refresh} />
+      <SyncPanel notify={notify} />
 
       {/* --------------------------------- AI --------------------------------- */}
       <Card>
@@ -568,7 +539,7 @@ export function Settings() {
           title="AI profiles"
           sub={`${enabledCount} ready · ${profiles.length} saved`}
           action={
-            <Button size="sm" variant="soft" onClick={openNewProfile}>
+            <Button size="sm" variant="soft" onClick={() => openNewProfile()}>
               <Plus className="h-3.5 w-3.5" /> Add
             </Button>
           }
@@ -594,6 +565,23 @@ export function Settings() {
             </p>
           ) : null}
         </div>
+
+        {enabledCount < 2 ? (
+          <div className="mt-3 rounded-xl border border-accent/30 bg-accent/[0.05] p-3">
+            <p className="text-[11px] font-semibold text-ink">Add a free backup so AI never blocks you</p>
+            <p className="mt-0.5 text-[10px] leading-relaxed text-muted">
+              When Gemini is overloaded Monetr retries, tries your backup Gemini models, then moves to the next profile. A
+              second free provider means there is almost always one that answers.
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {FREE_BACKUPS.filter((id) => !profiles.some((p) => p.provider === id)).map((id) => (
+                <Button key={id} size="sm" variant="ghost" onClick={() => openNewProfile(id)} title={PROVIDERS[id].freeTier}>
+                  <Plus className="h-3 w-3" /> {PROVIDERS[id].short}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-3 space-y-2">
           {profiles.length === 0 ? (
@@ -923,6 +911,8 @@ export function Settings() {
         </div>
       </Card>
 
+      <CurrencyProfilesCard />
+
       {/* ------------------------------ categories ---------------------------- */}
       <Card>
         <SectionTitle
@@ -968,6 +958,8 @@ export function Settings() {
         </div>
       </Card>
 
+      <RulesCard />
+
       {/* ------------------------------ reminders ----------------------------- */}
       <Card>
         <SectionTitle title="Reminders" sub="Local alerts and calendar export" />
@@ -1000,34 +992,7 @@ export function Settings() {
       </Card>
 
       {/* ------------------------------- security ----------------------------- */}
-      <Card>
-        <SectionTitle title="Privacy & security" sub="A soft lock for a shared device" />
-        <div className="space-y-3">
-          <Toggle
-            checked={settings.lockEnabled}
-            onChange={(v) => {
-              if (v) openPin()
-              else setConfirm({ kind: 'remove-pin' })
-            }}
-            label="PIN lock"
-            hint="Asks for a PIN when Monetr opens or after a minute in the background."
-          />
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="ghost" onClick={openPin}>
-              <LockKeyhole className="h-3.5 w-3.5" /> {settings.lockEnabled ? 'Change PIN' : 'Set PIN'}
-            </Button>
-            {settings.lockEnabled ? (
-              <Button size="sm" variant="ghost" onClick={() => setConfirm({ kind: 'remove-pin' })}>
-                Remove PIN
-              </Button>
-            ) : null}
-          </div>
-          <p className="flex items-start gap-1.5 text-[10px] leading-relaxed text-muted">
-            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-good" />
-            This is a privacy screen, not encryption. Everything stays in this browser and nothing is uploaded.
-          </p>
-        </div>
-      </Card>
+      <SecurityCard />
 
       {/* --------------------------------- data ------------------------------- */}
       <Card>
@@ -1045,11 +1010,14 @@ export function Settings() {
           <Button variant="ghost" onClick={() => setConfirm({ kind: 'replace-import' })}>
             <Upload className="h-4 w-4" /> Replace from backup
           </Button>
+          <ReportExport className="col-span-2" />
         </div>
 
         <div className="mt-3 grid grid-cols-2 gap-2 text-center">
           <MiniStat label="Transactions" value={String(transactions.length)} />
           <MiniStat label="Bills" value={String(bills.length)} />
+          <MiniStat label="Investments" value={String(investments.length)} />
+          <MiniStat label="Rules" value={String(rules.length)} />
         </div>
 
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-line/70 bg-surface2/40 px-3 py-2.5">
@@ -1120,10 +1088,10 @@ export function Settings() {
         <div className="flex items-start gap-2.5">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
           <div className="min-w-0 flex-1 text-[10px] leading-relaxed text-muted">
-            <p className="font-semibold text-ink">Monetr v1.0.0</p>
+            <p className="font-semibold text-ink">Monetr v1.1.0</p>
             <p className="mt-0.5">
-              Local-first spending tracker. Data lives in IndexedDB on this device; there is no account, server or cloud
-              sync. Backups are plain JSON files you control.
+              Local-first spending tracker. Data lives in IndexedDB on this device. Optional cloud sync stores only an
+              end-to-end encrypted copy; backups are plain JSON files you control.
             </p>
             <p className="mt-1.5">
               Schema version {settings.schemaVersion} · today {formatDate(today, 'long')} ·{' '}
@@ -1243,6 +1211,23 @@ export function Settings() {
               </div>
             ) : null}
 
+            <Field
+              label="Backup models (same key)"
+              hint="Comma-separated. Tried in order when the main model is overloaded or out of free quota."
+            >
+              <Input
+                value={form.fallbackModels}
+                onChange={(e) => setForm({ ...form, fallbackModels: e.target.value })}
+                placeholder="e.g. gemini-2.5-flash-lite, gemini-2.0-flash"
+              />
+            </Field>
+
+            {PROVIDERS[form.provider].freeTier ? (
+              <p className="rounded-xl border border-good/30 bg-good/10 px-3 py-2 text-[10px] leading-relaxed text-good">
+                Free tier: {PROVIDERS[form.provider].freeTier}
+              </p>
+            ) : null}
+
             <div className="grid grid-cols-2 gap-3">
               <Field label="Temperature" hint="Optional. Leave blank for the provider default.">
                 <Input
@@ -1289,57 +1274,6 @@ export function Settings() {
             </div>
           </div>
         ) : null}
-      </Modal>
-
-      <Modal
-        open={pinOpen}
-        onClose={() => setPinOpen(false)}
-        title={settings.lockEnabled ? 'Change PIN' : 'Set a PIN'}
-        subtitle="4–8 digits. This is a privacy curtain, not encryption."
-        size="sm"
-        footer={
-          <div className="flex gap-2">
-            <Button variant="ghost" className="flex-1" onClick={() => setPinOpen(false)}>
-              Cancel
-            </Button>
-            <Button className="flex-1" onClick={savePin} loading={pinBusy} disabled={pin.length < 4}>
-              Save PIN
-            </Button>
-          </div>
-        }
-      >
-        <div className="space-y-3">
-          <Field label="New PIN">
-            <Input
-              value={pin}
-              onChange={(e) => {
-                setPinValue(e.target.value.replace(/\D/g, '').slice(0, 8))
-                setPinError('')
-              }}
-              type="password"
-              inputMode="numeric"
-              autoComplete="new-password"
-              placeholder="••••"
-            />
-          </Field>
-          <Field label="Confirm PIN">
-            <Input
-              value={pinConfirm}
-              onChange={(e) => {
-                setPinConfirm(e.target.value.replace(/\D/g, '').slice(0, 8))
-                setPinError('')
-              }}
-              type="password"
-              inputMode="numeric"
-              autoComplete="new-password"
-              placeholder="••••"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void savePin()
-              }}
-            />
-          </Field>
-          {pinError ? <p className="text-[11px] font-medium text-bad">{pinError}</p> : null}
-        </div>
       </Modal>
 
       <Modal

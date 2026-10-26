@@ -21,7 +21,11 @@ import {
   markBillPaid,
   snoozeBill,
   updateBill,
+  verifyPayment,
+  collectSplit,
+  waiveSplit,
 } from '../db/db'
+import type { BillPayment } from '../types'
 import { addDays, dueLabel, formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor } from '../lib/money'
 import { confidenceLabel, frequencyLabel } from '../lib/bills'
@@ -60,6 +64,40 @@ export function Bills() {
   const [payNote, setPayNote] = useState('')
   const [createTxn, setCreateTxn] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [fixing, setFixing] = useState<BillPayment | null>(null)
+  const [fixAmount, setFixAmount] = useState('')
+
+  const owed = payments.filter((p) => p.splitAmount && !p.splitCollectedAt)
+  const owedByPerson = owed.reduce<Record<string, number>>((acc, p) => {
+    const k = p.splitName ?? 'Split'
+    acc[k] = (acc[k] ?? 0) + toBaseMinor(p.splitAmount ?? 0, p.currency, p.fxRate, currency)
+    return acc
+  }, {})
+
+  async function remind(p: BillPayment, billName: string) {
+    const text = `Hi ${p.splitName ?? ''}, your share of ${billName} for ${formatDate(p.paidDate, 'short')} is ${formatMoney(p.splitAmount ?? 0, p.currency)}. Thanks!`
+    try {
+      if (navigator.share) await navigator.share({ text })
+      else {
+        await navigator.clipboard.writeText(text)
+        notify('Reminder message copied', 'success')
+      }
+    } catch {
+      /* share sheet dismissed */
+    }
+  }
+
+  async function collect(p: BillPayment) {
+    await collectSplit(p.id, currency)
+    await refresh()
+    notify(`Got ${formatMoney(p.splitAmount ?? 0, p.currency)} from ${p.splitName ?? 'them'} — your spend on this bill is now just your share`, 'success')
+  }
+
+  async function confirmAuto(p: BillPayment, amountMinor?: number) {
+    await verifyPayment(p.id, currency, amountMinor)
+    await refresh()
+    notify(amountMinor !== undefined && amountMinor !== p.amount ? 'Amount corrected' : 'Autopay confirmed', 'success')
+  }
 
   const list = useMemo(() => {
     const enriched = bills
@@ -168,6 +206,14 @@ export function Bills() {
             per month · {dueThisWeek} due in 7 days
             {overdue ? <span className="font-semibold text-bad"> · {overdue} overdue</span> : null}
           </p>
+          {Object.keys(owedByPerson).length ? (
+            <p className="mt-1 text-xs font-semibold text-good">
+              Owed to you:{' '}
+              {Object.entries(owedByPerson)
+                .map(([name, amt]) => `${name} ${formatMoney(amt, currency)}`)
+                .join(' · ')}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button onClick={startAdd}>
@@ -184,7 +230,7 @@ export function Bills() {
           checked={settings.notifications}
           onChange={toggleNotifications}
           label="Bill notifications"
-          hint="Shown when you open the app — no server, so nothing runs in the background. Export .ics for real calendar alarms."
+          hint="Shown while Monetr is open. Export .ics for alarms that fire even when it's closed. Autopay bills are recorded automatically on their due date for you to confirm."
         />
         <div className="flex items-center justify-between gap-2 rounded-xl border border-line/70 bg-surface2/50 px-3 py-2 text-[11px] text-muted">
           <span>Reminders are predicted from actual payment dates.</span>
@@ -238,6 +284,7 @@ export function Bills() {
                           {frequencyLabel(bill)}
                           {bill.dueDay ? ` · day ${bill.dueDay}` : ''}
                           {bill.autoPay ? ' · autopay' : ''}
+                          {bill.split ? ` · split with ${bill.split.name}` : ''}
                         </p>
                       </div>
                       <div className="text-right">
@@ -245,7 +292,9 @@ export function Bills() {
                           {formatMoney(schedule.typicalAmount || bill.baseAmount, currency)}
                         </p>
                         {schedule.status === 'overdue' ? (
-                          <p className="text-[10px] font-bold text-bad">{schedule.overdueDays}d overdue</p>
+                          <p className="text-[10px] font-bold text-bad">
+                            {schedule.missed > 1 ? `${schedule.missed} payments missed` : `${schedule.overdueDays}d overdue`}
+                          </p>
                         ) : schedule.status === 'due-soon' ? (
                           <p className="text-[10px] font-bold text-warn">
                             {schedule.daysUntil === 0 ? 'Due today' : dueLabel(schedule.nextDue!)}
@@ -291,6 +340,62 @@ export function Bills() {
                         <ChevronDown className={cn('h-3 w-3 transition', isOpen && 'rotate-180')} />
                       </button>
                     </div>
+
+                    {history
+                      .filter((p) => p.splitAmount && !p.splitCollectedAt && (!p.autoRecorded || p.verified))
+                      .map((p) => (
+                        <div key={`split-${p.id}`} className="mt-2.5 rounded-xl border border-good/30 bg-good/[0.06] px-3 py-2">
+                          <p className="text-[11px] text-ink">
+                            Collect <span className="font-semibold">{formatMoney(p.splitAmount ?? 0, p.currency)}</span> from{' '}
+                            {p.splitName} for {formatDate(p.paidDate, 'short')}.
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            <Button size="sm" variant="soft" onClick={() => collect(p)}>
+                              <Check className="h-3 w-3" /> Got it
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => remind(p, bill.name)}>
+                              Send reminder
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="plain"
+                              className="px-1.5 text-muted"
+                              onClick={async () => {
+                                await waiveSplit(p.id)
+                                await refresh()
+                              }}
+                            >
+                              Not needed
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+
+                    {history
+                      .filter((p) => p.autoRecorded && !p.verified)
+                      .map((p) => (
+                        <div key={p.id} className="mt-2.5 rounded-xl border border-accent/30 bg-accent/[0.06] px-3 py-2">
+                          <p className="text-[11px] text-ink">
+                            Autopay recorded {formatMoney(p.amount, p.currency)} on {formatDate(p.paidDate, 'short')}. Was that the amount taken?
+                            {p.splitAmount ? ` Then collect ${formatMoney(p.splitAmount, p.currency)} from ${p.splitName}.` : ''}
+                          </p>
+                          <div className="mt-1.5 flex gap-1.5">
+                            <Button size="sm" variant="soft" onClick={() => confirmAuto(p)}>
+                              <Check className="h-3 w-3" /> Looks right
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => {
+                                setFixing(p)
+                                setFixAmount(majorString(p.amount, p.currency))
+                              }}
+                            >
+                              Different amount
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
                   </div>
                 </div>
 
@@ -303,6 +408,7 @@ export function Bills() {
                           <div key={p.id} className="flex items-center gap-2 text-[11px]">
                             <CalendarClock className="h-3 w-3 text-muted" />
                             <span className="text-ink">{formatDate(p.paidDate, 'medium')}</span>
+                            {p.autoRecorded ? <Badge tone={p.verified ? 'good' : 'accent'}>{p.verified ? 'autopay ✓' : 'autopay'}</Badge> : null}
                             <span className="tnum ml-auto font-semibold text-ink">{formatMoney(p.baseAmount, currency)}</span>
                             <button
                               type="button"
@@ -408,6 +514,37 @@ export function Bills() {
       </Modal>
 
       <Modal
+        open={Boolean(fixing)}
+        onClose={() => setFixing(null)}
+        title="What did autopay take?"
+        subtitle="Updates the payment and the matching expense."
+        size="sm"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="ghost" className="flex-1" onClick={() => setFixing(null)}>
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              onClick={async () => {
+                if (!fixing) return
+                const minor = fromMajorString(fixAmount, fixing.currency)
+                if (!minor || minor <= 0) return notify('Enter the amount that was deducted', 'error')
+                await confirmAuto(fixing, minor)
+                setFixing(null)
+              }}
+            >
+              Save
+            </Button>
+          </div>
+        }
+      >
+        <Field label={`Amount (${fixing?.currency ?? currency})`}>
+          <Input value={fixAmount} onChange={(e) => setFixAmount(e.target.value)} inputMode="decimal" autoFocus />
+        </Field>
+      </Modal>
+
+      <Modal
         open={Boolean(snoozing)}
         onClose={() => setSnoozing(null)}
         title={`Snooze ${snoozing?.name ?? ''}`}
@@ -496,6 +633,10 @@ function BillEditor({
   const [leadDays, setLeadDays] = useState(String(settings.defaultBillLeadDays))
   const [autoPay, setAutoPay] = useState(false)
   const [notes, setNotes] = useState('')
+  const [splitOn, setSplitOn] = useState(false)
+  const [splitName, setSplitName] = useState('')
+  const [splitMode, setSplitMode] = useState<'percent' | 'amount'>('percent')
+  const [splitValue, setSplitValue] = useState('50')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
@@ -517,6 +658,10 @@ function BillEditor({
       setLeadDays(String(bill.leadDays))
       setAutoPay(bill.autoPay)
       setNotes(bill.notes ?? '')
+      setSplitOn(Boolean(bill.split))
+      setSplitName(bill.split?.name ?? '')
+      setSplitMode(bill.split?.mode ?? 'percent')
+      setSplitValue(bill.split ? (bill.split.mode === 'percent' ? String(bill.split.value) : majorString(bill.split.value, bill.currency)) : '50')
     } else {
       setName('')
       setMerchant('')
@@ -530,6 +675,10 @@ function BillEditor({
       setLeadDays(String(settings.defaultBillLeadDays))
       setAutoPay(false)
       setNotes('')
+      setSplitOn(false)
+      setSplitName('')
+      setSplitMode('percent')
+      setSplitValue('50')
     }
     setError('')
   }
@@ -559,13 +708,21 @@ function BillEditor({
         dueDay:
           frequency === 'monthly' || frequency === 'quarterly' || frequency === 'yearly'
             ? dueDay
-              ? Math.min(28, Math.max(1, Number(dueDay)))
+              ? Math.min(31, Math.max(1, Number(dueDay)))
               : undefined
             : undefined,
         anchorDate,
         autoPay,
         leadDays: Math.max(0, Math.min(30, Number(leadDays) || 0)),
         notes,
+        split:
+          splitOn && splitName.trim() && Number(splitValue) > 0
+            ? {
+                name: splitName.trim(),
+                mode: splitMode,
+                value: splitMode === 'percent' ? Math.min(100, Number(splitValue)) : (fromMajorString(splitValue, currency) ?? 0),
+              }
+            : null,
       }
       if (bill) await updateBill(bill.id, input, settings.currency)
       else await addBill(input, settings.currency)
@@ -664,6 +821,22 @@ function BillEditor({
         </div>
 
         <Toggle checked={autoPay} onChange={setAutoPay} label="On autopay" hint="Shows the autopay tag and uses a shorter default lead time." />
+
+        <div className="rounded-xl border border-line/70 p-3">
+          <Toggle checked={splitOn} onChange={setSplitOn} label="Split with someone" hint="e.g. a roommate pays you back part of this bill each time it's paid." />
+          {splitOn ? (
+            <div className="mt-3 grid grid-cols-[1fr_auto_90px] items-end gap-2">
+              <Field label="Who">
+                <Input value={splitName} onChange={(e) => setSplitName(e.target.value)} placeholder="e.g. Riya" />
+              </Field>
+              <Select value={splitMode} onChange={(e) => setSplitMode(e.target.value as 'percent' | 'amount')} className="h-[42px]">
+                <option value="percent">%</option>
+                <option value="amount">{currency}</option>
+              </Select>
+              <Input value={splitValue} onChange={(e) => setSplitValue(e.target.value)} inputMode="decimal" />
+            </div>
+          ) : null}
+        </div>
 
         <Field label="Notes (optional)">
           <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Account number, who to call…" />

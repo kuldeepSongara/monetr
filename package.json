@@ -1,20 +1,22 @@
 {
   "name": "monetr",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && tsc -p tsconfig.api.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc -p tsconfig.api.json",
     "icons": "node scripts/make-icons.mjs",
     "serve": "node .tooling/node/bin/node scripts/serve-dist.mjs",
-    "build:static": "npm run build && node -e \"require('fs').writeFileSync('dist/README.txt','Open index.html in a modern browser, or serve this folder with any static server.\\\\n\\\\nFor Android APK: use PWA Builder (https://www.pwabuilder.com/) pointing to your hosted URL, or use PWABuilder CLI.\\\\n\\\\nNo backend/server required. All data stays in your browser.')\""
+    "build:static": "npm run build && node -e \"require('fs').writeFileSync('dist/README.txt','Open index.html in a modern browser, or serve this folder with any static server.\\\\n\\\\nFor Android APK: use PWA Builder (https://www.pwabuilder.com/) pointing to your hosted URL, or use PWABuilder CLI.\\\\n\\\\nNo backend/server required. All data stays in your browser.')\"",
+    "test": "vitest run"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.2.0",
     "dexie": "^4.0.8",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.451.0",
     "pako": "^3.0.2",
     "qrcode": "^1.5.4",
@@ -24,6 +26,7 @@
     "recharts": "^2.12.7"
   },
   "devDependencies": {
+    "@types/node": "^20.19.43",
     "@types/pako": "^2.0.4",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.11",
@@ -33,6 +36,7 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
     "typescript": "^5.6.3",
-    "vite": "^5.4.9"
+    "vite": "^5.4.9",
+    "vitest": "^2.1.9"
   }
 }

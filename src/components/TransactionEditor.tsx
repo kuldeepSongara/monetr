@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { Trash2, Undo2 } from 'lucide-react'
 import { useApp } from '../store'
 import type { CategorySource, Txn, TxnType } from '../types'
-import { addTransaction, deleteTransaction, learnRules, updateTransaction } from '../db/db'
-import { todayISO } from '../lib/dates'
+import { addRefund, addTransaction, deleteTransaction, learnRules, updateTransaction } from '../db/db'
+import { formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor, currencyInfo } from '../lib/money'
+import { ruleCategory, suggestedFxRate } from '../lib/suggest'
 import { Button, Confirm, Field, Input, Modal, Select, Textarea, cn } from './ui'
 
 export interface EditorSeed {
@@ -33,7 +34,7 @@ const SOURCE_LABEL: Record<CategorySource, string> = {
 }
 
 export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
-  const { transactions, categories, settings, refresh, notify } = useApp()
+  const { transactions, categories, settings, rules, currencyProfiles, refresh, notify } = useApp()
   const existing = useMemo(() => transactions.find((t) => t.id === txnId), [transactions, txnId])
 
   const [type, setType] = useState<TxnType>('expense')
@@ -44,6 +45,12 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
   const [merchant, setMerchant] = useState('')
   const [categoryId, setCategoryId] = useState('cat_other')
   const [note, setNote] = useState('')
+  /** Where the current category came from; a manual pick stops rules from overriding it. */
+  const [catSource, setCatSource] = useState<CategorySource>('manual')
+  const [refundOpen, setRefundOpen] = useState(false)
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundDate, setRefundDate] = useState(todayISO())
+  const [refundNote, setRefundNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState('')
@@ -60,27 +67,61 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
       setMerchant(existing.merchant)
       setCategoryId(existing.categoryId)
       setNote(existing.note ?? '')
+      setCatSource(existing.categorySource)
       return
     }
     const t = seed?.type ?? 'expense'
     setType(t)
     setAmount(seed?.amountMajor !== undefined ? String(seed.amountMajor) : '')
-    setCurrency(seed?.currency ?? settings.currency)
-    setFxRate('1')
+    const cur = seed?.currency ?? settings.currency
+    setCurrency(cur)
+    setFxRate(String(suggestedFxRate(cur, settings.currency, transactions, currencyProfiles) ?? ''))
     setDate(seed?.date ?? todayISO())
     setMerchant(seed?.merchant ?? '')
-    setCategoryId(seed?.categoryId ?? (t === 'income' ? 'cat_salary' : 'cat_other'))
+    const ruled = seed?.merchant && t !== 'transfer' ? ruleCategory(seed.merchant, rules) : undefined
+    setCategoryId(ruled ?? seed?.categoryId ?? defaultCategory(t))
+    setCatSource(ruled ? 'rule' : seed?.source === 'ai' || seed?.source === 'receipt' ? 'ai' : 'default')
     setNote(seed?.note ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, txnId, seed, settings.currency])
 
-  const relevantCategories = categories.filter((c) => (type === 'income' ? c.kind === 'income' : c.kind === 'expense'))
+  function defaultCategory(t: TxnType): string {
+    return t === 'income' ? 'cat_salary' : t === 'transfer' ? 'cat_transfer' : 'cat_other'
+  }
+
+  function changeMerchant(value: string) {
+    setMerchant(value)
+    if (catSource === 'manual' || type === 'transfer') return
+    const ruled = ruleCategory(value, rules)
+    const kind = categories.find((c) => c.id === ruled)?.kind
+    if (ruled && kind === type) {
+      setCategoryId(ruled)
+      setCatSource('rule')
+    }
+  }
+
+  function changeCurrency(code: string) {
+    setCurrency(code)
+    setFxRate(String(suggestedFxRate(code, settings.currency, transactions, currencyProfiles) ?? ''))
+  }
+
+  const relevantCategories = categories.filter((c) => c.kind === (type === 'refund' ? 'expense' : type))
+  const refunds = existing ? transactions.filter((t) => t.refundOf === existing.id) : []
+  const refundedMinor = refunds.reduce((s, t) => s + t.amount, 0)
+  const original = existing?.refundOf ? transactions.find((t) => t.id === existing.refundOf) : undefined
   const isForeign = currency !== settings.currency
   const amountMinor = fromMajorString(amount, currency) ?? 0
-  const basePreview = toBaseMinor(amountMinor, currency, Number(fxRate) || 1, settings.currency)
+  const fxValue = isForeign ? Number(fxRate) : 1
+  const fxValid = !isForeign || (Number.isFinite(fxValue) && fxValue > 0)
+  const basePreview = fxValid ? toBaseMinor(amountMinor, currency, fxValue, settings.currency) : 0
 
   async function handleSave() {
     if (!amountMinor || amountMinor <= 0) {
       setError('Enter an amount above zero.')
+      return
+    }
+    if (!fxValid) {
+      setError(`Enter the exchange rate: how many ${settings.currency} is 1 ${currency}?`)
       return
     }
     setSaving(true)
@@ -90,19 +131,22 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
         date,
         amount: amountMinor,
         currency,
-        fxRate: Number(fxRate) || 1,
+        fxRate: fxValue,
         type,
         categoryId,
         merchant: merchant.trim(),
         note,
-        categorySource: 'manual' as const,
+        categorySource: catSource === 'default' ? ('manual' as const) : catSource,
         source: existing?.source ?? seed?.source ?? 'manual',
       }
       if (existing) {
         await updateTransaction(existing.id, input, settings.currency)
       } else {
         await addTransaction(input, settings.currency)
-        if (merchant.trim()) await learnRules([{ merchant, categoryId }])
+      }
+      // Learn merchant → category whenever you picked (or confirmed) a category yourself.
+      if (merchant.trim() && type !== 'transfer' && (catSource === 'manual' || !existing)) {
+        await learnRules([{ merchant, categoryId }])
       }
       await refresh()
       notify(existing ? 'Transaction updated' : 'Transaction added', 'success')
@@ -112,6 +156,26 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
     } finally {
       setSaving(false)
     }
+  }
+
+  function openRefund() {
+    if (!existing) return
+    setRefundAmount(majorString(Math.max(0, existing.amount - refundedMinor), existing.currency))
+    setRefundDate(todayISO())
+    setRefundNote('')
+    setRefundOpen(true)
+  }
+
+  async function saveRefund() {
+    if (!existing) return
+    const minor = fromMajorString(refundAmount, existing.currency)
+    if (!minor || minor <= 0) return notify('Enter how much came back', 'error')
+    if (minor > existing.amount - refundedMinor) return notify('That is more than what is left to refund', 'error')
+    await addRefund(existing, { amountMinor: minor, date: refundDate, note: refundNote.trim() || (minor === existing.amount ? 'Returned' : 'Partial refund') }, settings.currency)
+    await refresh()
+    setRefundOpen(false)
+    notify(minor === existing.amount - refundedMinor ? 'Refund recorded — this spend is fully reversed' : 'Partial refund recorded', 'success')
+    onClose()
   }
 
   async function handleDelete() {
@@ -147,15 +211,23 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
         }
       >
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-1 rounded-xl border border-line/70 bg-surface2 p-1">
-            {(['expense', 'income'] as TxnType[]).map((t) => (
+          {type === 'refund' ? (
+            <div className="rounded-xl border border-good/30 bg-good/10 px-3 py-2 text-[11px] text-good">
+              Refund{original ? ` for ${original.merchant} on ${formatDate(original.date, 'short')} (${formatMoney(original.amount, original.currency)})` : ''} —
+              reduces spending in this category.
+            </div>
+          ) : (
+          <div className="grid grid-cols-3 gap-1 rounded-xl border border-line/70 bg-surface2 p-1">
+            {(['expense', 'income', 'transfer'] as TxnType[]).map((t) => (
               <button
                 key={t}
                 type="button"
                 onClick={() => {
                   setType(t)
-                  const first = categories.find((c) => c.kind === (t === 'income' ? 'income' : 'expense'))
-                  if (first && (categoryId === 'cat_other' || categoryId === 'cat_salary')) setCategoryId(first.id)
+                  if (categories.find((c) => c.id === categoryId)?.kind !== t) {
+                    setCategoryId(categories.find((c) => c.kind === t)?.id ?? defaultCategory(t))
+                    setCatSource('default')
+                  }
                 }}
                 className={cn(
                   'rounded-lg py-2 text-xs font-semibold capitalize transition',
@@ -166,6 +238,7 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
               </button>
             ))}
           </div>
+          )}
 
           <div className="flex items-end gap-2">
             <Field label="Amount" className="flex-1">
@@ -179,7 +252,7 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
               />
             </Field>
             <Field label="Currency" className="w-28">
-              <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              <Select value={currency} onChange={(e) => changeCurrency(e.target.value)}>
                 {CURRENCIES.map((c) => (
                   <option key={c.code} value={c.code}>
                     {c.code}
@@ -192,11 +265,17 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
           {isForeign ? (
             <div className="rounded-xl border border-line/70 bg-surface2/60 p-3">
               <Field label={`Exchange rate · 1 ${currency} = ? ${settings.currency}`}>
-                <Input value={fxRate} onChange={(e) => setFxRate(e.target.value)} inputMode="decimal" />
+                <Input value={fxRate} onChange={(e) => setFxRate(e.target.value)} inputMode="decimal" placeholder="Required" />
               </Field>
               <p className="mt-2 text-[11px] text-muted">
-                This entry counts as <span className="font-semibold text-ink">{formatMoney(basePreview, settings.currency)}</span> in
-                your totals.
+                {fxValid ? (
+                  <>
+                    This entry counts as <span className="font-semibold text-ink">{formatMoney(basePreview, settings.currency)}</span> in
+                    your totals. Prefilled from the last rate you used for {currency}.
+                  </>
+                ) : (
+                  <span className="font-medium text-warn">Enter the rate from your bank or card app so totals stay right.</span>
+                )}
               </p>
             </div>
           ) : null}
@@ -208,7 +287,7 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
             <Field label="Merchant">
               <Input
                 value={merchant}
-                onChange={(e) => setMerchant(e.target.value)}
+                onChange={(e) => changeMerchant(e.target.value)}
                 placeholder="e.g. Trader Joe's"
                 list="merchant-suggestions"
               />
@@ -221,13 +300,16 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
             ))}
           </datalist>
 
-          <Field label="Category">
+          <Field label={catSource === 'rule' ? 'Category · from your rule' : catSource === 'ai' ? 'Category · suggested by AI' : 'Category'}>
             <div className="grid max-h-44 grid-cols-3 gap-1.5 overflow-y-auto pr-1">
               {relevantCategories.map((c) => (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => setCategoryId(c.id)}
+                  onClick={() => {
+                    setCategoryId(c.id)
+                    setCatSource('manual')
+                  }}
                   className={cn(
                     'flex items-center gap-1.5 rounded-lg border px-2 py-2 text-left text-[11px] font-medium transition',
                     categoryId === c.id
@@ -246,7 +328,54 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
             <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="What was this for?" rows={2} />
           </Field>
 
+          {existing && existing.type === 'expense' ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-line/70 px-3 py-2">
+              <p className="text-[11px] text-muted">
+                {refundedMinor
+                  ? `${formatMoney(refundedMinor, existing.currency)} refunded so far`
+                  : 'Returned it or got money back?'}
+              </p>
+              {refundedMinor < existing.amount ? (
+                <Button size="sm" variant="soft" onClick={openRefund}>
+                  <Undo2 className="h-3.5 w-3.5" /> Refund / return
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+
           {error ? <p className="text-xs font-medium text-bad">{error}</p> : null}
+        </div>
+      </Modal>
+
+      <Modal
+        open={refundOpen}
+        onClose={() => setRefundOpen(false)}
+        title="Record a refund"
+        subtitle={existing ? `${existing.merchant} · ${formatMoney(existing.amount, existing.currency)} on ${formatDate(existing.date, 'short')}` : undefined}
+        size="sm"
+        footer={
+          <div className="flex gap-2">
+            <Button variant="ghost" className="flex-1" onClick={() => setRefundOpen(false)}>
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={saveRefund}>
+              Save refund
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <Field label={`Amount back (${existing?.currency ?? ''})`} hint="Full amount reverses the spend; less is a partial refund.">
+              <Input value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} inputMode="decimal" />
+            </Field>
+            <Field label="Refunded on">
+              <Input type="date" value={refundDate} onChange={(e) => setRefundDate(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Note">
+            <Input value={refundNote} onChange={(e) => setRefundNote(e.target.value)} placeholder="e.g. Returned — wrong size" />
+          </Field>
         </div>
       </Modal>
 

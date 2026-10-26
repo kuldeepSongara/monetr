@@ -16,6 +16,8 @@ export interface BillSchedule {
   paymentCount: number
   typicalAmount: number
   snoozed: boolean
+  /** Due dates that have passed without a recorded payment (0 when on track). */
+  missed: number
 }
 
 const EXPECTED_DAYS: Record<string, number> = {
@@ -26,10 +28,33 @@ const EXPECTED_DAYS: Record<string, number> = {
   yearly: 365.25,
 }
 
-function setDayOfMonth(iso: ISODate, day: number): ISODate {
+function monthIndex(iso: ISODate): number {
   const d = parseISO(iso)
-  const dim = daysInMonth(d.getFullYear(), d.getMonth())
-  return toISO(new Date(d.getFullYear(), d.getMonth(), Math.min(day, dim)))
+  return d.getFullYear() * 12 + d.getMonth()
+}
+
+/** The due date in month `idx` (year*12+month), clamped to the month length. */
+export function occurrenceAt(idx: number, dueDay: number): ISODate {
+  const year = Math.floor(idx / 12)
+  const month = idx - year * 12
+  return toISO(new Date(year, month, Math.min(dueDay, daysInMonth(year, month))))
+}
+
+/** The scheduled due date closest to `date` (ties go to the earlier one — late payments are more common). */
+export function nearestOccurrence(date: ISODate, anchorIdx: number, step: number, dueDay: number): ISODate {
+  const idx = monthIndex(date)
+  const aligned = idx - ((((idx - anchorIdx) % step) + step) % step)
+  let best = occurrenceAt(aligned, dueDay)
+  let bestDiff = Math.abs(daysBetween(date, best))
+  for (const candidateIdx of [aligned - step, aligned + step]) {
+    const candidate = occurrenceAt(candidateIdx, dueDay)
+    const diff = Math.abs(daysBetween(date, candidate))
+    if (diff < bestDiff || (diff === bestDiff && candidate < best)) {
+      best = candidate
+      bestDiff = diff
+    }
+  }
+  return best
 }
 
 function monthsFor(frequency: Bill['frequency']): number | null {
@@ -73,24 +98,17 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
   const monthStep = monthsFor(bill.frequency)
 
   if (bill.dueDay && monthStep) {
-    // Calendar-anchored bills: next occurrence of the preferred day.
-    let cursor = setDayOfMonth(addMonths(startFrom, 1), bill.dueDay)
+    // Calendar-anchored bills. Due dates fall on `dueDay` in months aligned to the anchor month
+    // (every month, every 3rd month, every 12th month…). A payment covers whichever due date it is
+    // closest to, so paying a few days early or late never shifts or duplicates the cycle.
+    const anchorIdx = monthIndex(anchor)
     if (lastPaid) {
-      // If the bill was paid early, the next due date may still be this month's day.
-      const sameMonth = setDayOfMonth(lastPaid, bill.dueDay)
-      if (sameMonth > lastPaid) cursor = sameMonth
-      if (daysBetween(today, cursor) < -31) {
-        while (cursor < today) cursor = addMonths(cursor, monthStep)
-      }
+      const covered = nearestOccurrence(lastPaid, anchorIdx, monthStep, bill.dueDay)
+      nextDue = occurrenceAt(monthIndex(covered) + monthStep, bill.dueDay)
     } else {
-      cursor = setDayOfMonth(anchor, bill.dueDay)
-      let guard = 0
-      while (cursor < today && guard < 36) {
-        cursor = addMonths(cursor, monthStep)
-        guard++
-      }
+      const first = occurrenceAt(anchorIdx, bill.dueDay)
+      nextDue = first >= anchor ? first : occurrenceAt(anchorIdx + monthStep, bill.dueDay)
     }
-    nextDue = cursor
     basis = 'fixed-day'
     confidence = mine.length >= 2 ? 0.78 + 0.12 * consistency : 0.62
     cadenceDays = monthStep * 30.44
@@ -122,6 +140,20 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
   const daysUntil = nextDue ? daysBetween(today, nextDue) : null
   const snoozed = Boolean(bill.snoozedUntil && bill.snoozedUntil >= today)
 
+  let missed = 0
+  if (nextDue && nextDue < today) {
+    // Count every due date that slipped by, instead of silently jumping ahead to the next one.
+    let cursor = nextDue
+    let guard = 0
+    while (cursor < today && guard < 120) {
+      missed++
+      guard++
+      if (basis === 'fixed-day' && monthStep && bill.dueDay) cursor = occurrenceAt(monthIndex(cursor) + monthStep, bill.dueDay)
+      else if (cadenceDays && cadenceDays > 0) cursor = addDays(cursor, Math.round(cadenceDays))
+      else break
+    }
+  }
+
   let status: BillStatus = 'upcoming'
   if (!bill.active || bill.archived) status = 'inactive'
   else if (daysUntil !== null && daysUntil < 0) status = 'overdue'
@@ -140,6 +172,7 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
     paymentCount: mine.length,
     typicalAmount,
     snoozed,
+    missed,
   }
 }
 

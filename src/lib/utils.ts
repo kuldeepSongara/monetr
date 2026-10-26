@@ -1,3 +1,5 @@
+import { suspendAutoLock } from './lockGuard'
+import { sha256Bytes } from './sha256'
 export function uid(prefix = ''): string {
   const rnd =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -64,21 +66,28 @@ export function downloadFile(filename: string, content: string, mime = 'applicat
   setTimeout(() => URL.revokeObjectURL(url), 2000)
 }
 
-export function pickFile(accept: string): Promise<File | null> {
-  return new Promise((resolve) => {
+/**
+ * Open the system file picker. Auto-lock is paused while the picker (or camera) is open — on a
+ * phone that hides the app, and we don't want to lock you out mid-scan.
+ */
+export function pickFile(accept: string, capture?: 'environment' | 'user'): Promise<File | null> {
+  const resume = suspendAutoLock(5 * 60_000)
+  return new Promise<File | null>((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = accept
+    if (capture) input.setAttribute('capture', capture)
     input.onchange = () => resolve(input.files?.[0] ?? null)
     input.oncancel = () => resolve(null)
     input.click()
-  })
+  }).finally(() => window.setTimeout(resume, 1500))
 }
 
 export async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return Array.from(new Uint8Array(digest))
+  // crypto.subtle only exists on https/localhost; fall back to a JS implementation on plain http (LAN dev).
+  const digest = crypto.subtle ? new Uint8Array(await crypto.subtle.digest('SHA-256', data)) : sha256Bytes(data)
+  return Array.from(digest)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
 }

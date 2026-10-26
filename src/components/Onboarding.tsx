@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, ExternalLink, Sparkles, Wallet } from 'lucide-react'
 import { useApp } from '../store'
+import { LinkExisting } from './sync/LinkExisting'
 import { BrandMark } from './Shell'
 import { Button, Field, Input, Select, Toggle, cn } from './ui'
 import { CURRENCIES, fromMajorString, majorString } from '../lib/money'
@@ -123,9 +124,12 @@ export function Onboarding() {
               Your money, on your device.
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              No sign-up, no server, no database to host. Everything is stored in this browser — and you can export a
-              backup any time.
+              No sign-up. Everything is stored on this device, with optional end-to-end encrypted sync to your other
+              devices and backups you can export any time.
             </p>
+            <div className="mt-4">
+              <LinkExisting />
+            </div>
 
             <div className="mt-6 space-y-3.5">
               <Field label="Main currency">

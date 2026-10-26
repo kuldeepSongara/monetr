@@ -295,3 +295,161 @@ Return JSON:
     result,
   }
 }
+
+/* ----------------------------- statement import ---------------------------- */
+
+export interface StatementLine {
+  date: string
+  merchant: string
+  amount: number
+  currency: string
+  type: 'expense' | 'income' | 'transfer' | 'refund'
+  categoryId: string
+  note?: string
+  confidence: number
+}
+
+export type StatementSource = { kind: 'image'; dataUrl: string } | { kind: 'pdf'; dataUrl: string } | { kind: 'text'; text: string }
+
+/** Pull transactions out of a statement screenshot, PDF, CSV or pasted text. */
+export async function extractStatement(
+  source: StatementSource,
+  categories: Category[],
+  baseCurrency: string,
+): Promise<{ lines: StatementLine[]; result: AIResult }> {
+  const year = todayISO().slice(0, 4)
+  const prompt = `Extract every transaction from this bank or credit card statement.
+
+Today is ${todayISO()}. Base currency: ${baseCurrency}.
+
+Rules:
+- amount: positive number in major units (12.50, not 1250).
+- type: "expense" for purchases/charges/debits, "refund" for merchant refunds/returns/reversals, "income" for salary or other deposits, "transfer" for card payments, payments received on a credit card, or moves between the person's own accounts.
+- date: YYYY-MM-DD. If the statement omits the year, use ${year} unless that would put the date in the future, then use the previous year.
+- currency: ISO code shown for that line, else the statement currency, else ${baseCurrency}.
+- merchant: a short clean name ("Starbucks", not "STARBUCKS #0423 TORONTO ON").
+- categoryId: one of the ids below matching the type (refunds use the expense category of what was refunded).
+- confidence: 0-1, how sure you are this line is a real transaction read correctly.
+- Skip balances, totals, interest summaries and headers.
+
+Categories:
+${categoryList(categories, ['expense', 'income'])}
+${categories
+  .filter((c) => c.kind === 'transfer')
+  .map((c) => `${c.id} = ${c.emoji} ${c.name} (transfer)`)
+  .join('\n')}
+
+Return JSON exactly like:
+{"lines":[{"date":"${todayISO()}","merchant":"Starbucks","amount":5.25,"currency":"${baseCurrency}","type":"expense","categoryId":"cat_dining","note":"","confidence":0.95}]}${
+    source.kind === 'text' ? `\n\nStatement text:\n${source.text.slice(0, 60_000)}` : ''
+  }`
+
+  const { data, result } = await aiJson<{ lines?: unknown[] } | unknown[]>(
+    {
+      prompt,
+      system: JSON_SYSTEM,
+      images: source.kind === 'image' ? [source.dataUrl] : undefined,
+      pdfs: source.kind === 'pdf' ? [source.dataUrl] : undefined,
+      maxTokens: 8000,
+      temperature: 0,
+      timeoutMs: 120_000,
+    },
+    'statement-import',
+  )
+  const raw = Array.isArray(data) ? data : Array.isArray(data.lines) ? data.lines : []
+  const allowed = new Map(categories.map((c) => [c.id, c.kind]))
+  const today = todayISO()
+  const lines: StatementLine[] = []
+  for (const item of raw) {
+    const r = item as Record<string, unknown>
+    const amount = Math.abs(Number(r.amount))
+    if (!amount || !Number.isFinite(amount)) continue
+    const type = r.type === 'income' || r.type === 'transfer' || r.type === 'refund' ? r.type : 'expense'
+    let date = /^\d{4}-\d{2}-\d{2}$/.test(String(r.date)) ? String(r.date) : today
+    if (date > today) date = `${Number(date.slice(0, 4)) - 1}${date.slice(4)}`
+    const cat = String(r.categoryId ?? '')
+    const catOk = allowed.get(cat) === (type === 'refund' ? 'expense' : type)
+    lines.push({
+      date,
+      merchant: String(r.merchant || 'Unknown').slice(0, 80),
+      amount,
+      currency: typeof r.currency === 'string' && /^[A-Z]{3}$/.test(r.currency) ? r.currency : baseCurrency,
+      type,
+      categoryId: catOk ? cat : type === 'income' ? 'cat_other-income' : type === 'transfer' ? 'cat_transfer' : 'cat_other',
+      note: r.note ? String(r.note).slice(0, 200) : undefined,
+      confidence: Math.max(0, Math.min(1, Number(r.confidence) || 0.5)),
+    })
+  }
+  return { lines, result }
+}
+
+/* --------------------------------- flagIt ---------------------------------- */
+
+const COACH_SYSTEM =
+  'You are a frank, practical personal-finance coach. Use only the numbers provided; never invent transactions. You cannot browse the web or check live prices — when something needs checking, say exactly what to check and where. Write concise GitHub-flavoured Markdown.'
+
+export async function flagReview(context: unknown, baseCurrency: string): Promise<{ text: string; result: AIResult }> {
+  const result = await callAI({
+    task: 'flag-review',
+    system: COACH_SYSTEM,
+    prompt: `Review this person's recent money activity (amounts in ${baseCurrency} major units unless stated).
+
+${JSON.stringify(context, null, 1)}
+
+Write max 220 words with these sections:
+### Flags
+Up to 5 bullets: unusual or rising spend, duplicate-looking charges, subscriptions worth reviewing, foreign-currency charges that probably carried FX fees (name them and the likely fee at ~2.5% unless a fee line is visible), budget pressure.
+### Save this week
+2-3 concrete actions with the amount each would save.
+### Investments
+1-2 bullets on the holdings summary (concentration, idle cash, fees) — skip if there are no holdings.`,
+    maxTokens: 1200,
+    temperature: 0.3,
+  })
+  return { text: result.text, result }
+}
+
+export async function habitForecast(context: unknown, baseCurrency: string): Promise<{ text: string; result: AIResult }> {
+  const result = await callAI({
+    task: 'habit-forecast',
+    system: COACH_SYSTEM,
+    prompt: `From this spending history (${baseCurrency} major units), predict the next likely discretionary spends and suggest how to head them off.
+
+${JSON.stringify(context, null, 1)}
+
+Max 200 words:
+### Likely next
+2-4 bullets: what, roughly when (weekday/time of cycle), typical amount — based on the actual patterns above.
+### Swap it
+For each, one realistic cheaper or healthier alternative and what it saves per month.`,
+    maxTokens: 1000,
+    temperature: 0.4,
+  })
+  return { text: result.text, result }
+}
+
+export async function preSpendCheck(
+  item: { title: string; price: string; url: string; notes: string },
+  context: unknown,
+  baseCurrency: string,
+): Promise<{ text: string; result: AIResult }> {
+  const result = await callAI({
+    task: 'pre-spend',
+    system: COACH_SYSTEM,
+    prompt: `The person is thinking about buying: ${JSON.stringify(item)}
+
+Their current position (${baseCurrency} major units), including similar past purchases:
+${JSON.stringify(context, null, 1)}
+
+Max 220 words:
+### Can you afford it right now?
+Compare against safe-to-spend, budgets and upcoming bills. Be specific.
+### Before you buy
+3-5 bullets: cheaper alternatives or timing (sales cycles, refurbished, older model), card benefits or price-protection worth checking, and what to verify on the retailer page. Say plainly that you can't see live prices.
+### Verdict
+One line: buy now, wait, or skip — and why.`,
+    maxTokens: 1100,
+    temperature: 0.4,
+  })
+  return { text: result.text, result }
+}

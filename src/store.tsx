@@ -15,6 +15,9 @@ import type {
   BillPayment,
   Budget,
   Category,
+  CurrencyProfile,
+  Investment,
+  InvestmentTx,
   Rule,
   Settings,
   Txn,
@@ -27,11 +30,18 @@ import {
   storageEstimate,
   seedSampleData,
   listCurrencyProfiles,
+  reconcileAutopay,
+  wipeAll,
 } from './db/db'
+import { isAutoLockSuspended } from './lib/lockGuard'
+import { hashPin, lockoutMs, verifyPin } from './lib/pin'
+import { verifyBiometric, type BiometricCredential } from './lib/biometric'
+import { requestAutoSync, setSyncState, startAutoSync } from './lib/sync'
 import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type BudgetRow, type SafeToSpend } from './lib/analytics'
 import { predictBill, type BillSchedule } from './lib/bills'
+import { findDuplicates, type DuplicatePair } from './lib/duplicates'
 import { todayISO } from './lib/dates'
-import { randomSalt, sha256Hex } from './lib/utils'
+import { randomSalt } from './lib/utils'
 
 export interface Toast {
   id: string
@@ -50,10 +60,12 @@ interface AppState {
   profiles: AIProfile[]
   rules: Rule[]
   logs: AILogEntry[]
-  currencyProfiles: any[]
-  investments: any[]
-  investmentTxs: any[]
+  currencyProfiles: CurrencyProfile[]
+  investments: Investment[]
+  investmentTxs: InvestmentTx[]
 }
+
+export type UnlockResult = { ok: true } | { ok: false; retryInMs?: number }
 
 interface StoreValue extends AppState {
   today: string
@@ -63,16 +75,21 @@ interface StoreValue extends AppState {
   safe: SafeToSpend
   anomalies: ReturnType<typeof detectAnomalies>
   subscriptions: ReturnType<typeof detectSubscriptions>
-  refresh: () => Promise<void>
+  /** Possible double entries / double charges, for you to review. Never acted on automatically. */
+  duplicates: DuplicatePair[]
+  refresh: (opts?: { fromSync?: boolean }) => Promise<void>
   saveSettings: (patch: Partial<Settings>) => Promise<void>
   notify: (message: string, kind?: Toast['kind']) => void
   toasts: Toast[]
   dismissToast: (id: string) => void
   locked: boolean
-  unlock: (pin: string) => Promise<boolean>
+  unlock: (pin: string) => Promise<UnlockResult>
+  unlockWithBiometric: () => Promise<boolean>
   lock: () => void
   setPin: (pin: string) => Promise<void>
   removePin: () => Promise<void>
+  setBiometric: (cred: BiometricCredential | null) => Promise<void>
+  resetDevice: () => Promise<void>
   canInstall: boolean
   installApp: () => Promise<void>
   loadSample: () => Promise<void>
@@ -113,7 +130,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [canInstall, setCanInstall] = useState(false)
   const [usage, setUsage] = useState<{ usage: number; quota: number } | null>(null)
   const installEvent = useRef<{ prompt: () => Promise<void> } | null>(null)
-  const initialisedLock = useRef(false)
 
   const notify = useCallback((message: string, kind: Toast['kind'] = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -125,7 +141,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
 
-  const refresh = useCallback(async () => {
+  const firstLoad = useRef(true)
+  const refresh = useCallback(async (opts?: { fromSync?: boolean }) => {
     const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs] = await Promise.all([
       db.settings.toArray(),
       db.categories.orderBy('order').toArray(),
@@ -140,9 +157,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.investments.toArray().catch(() => []),
       db.investmentTxs.toArray().catch(() => []),
     ])
+    const settings = settingsArr[0] ?? makeDefaultSettings()
+    if (firstLoad.current) {
+      firstLoad.current = false
+      // Decide the lock before the first paint so the app never flashes unlocked.
+      if (settings.lockEnabled && settings.pinHash) setLocked(true)
+    }
     setState({
       ready: true,
-      settings: settingsArr[0] ?? makeDefaultSettings(),
+      settings,
       categories: categories.filter((c) => !c.archived),
       transactions,
       bills,
@@ -156,16 +179,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       investmentTxs,
     })
     storageEstimate().then(setUsage).catch(() => {})
+    if (!opts?.fromSync) requestAutoSync()
   }, [])
 
   useEffect(() => {
     ensureSeeded()
-      .then(refresh)
+      .then(async () => {
+        const s = await db.settings.get('settings')
+        if (s?.onboarded) await reconcileAutopay(s.currency).catch(() => 0)
+      })
+      .then(() => refresh())
       .catch((err) => {
         console.error('Failed to open local database', err)
         notify(err instanceof Error ? err.message : 'Could not open local storage', 'error')
       })
   }, [refresh])
+
+  useEffect(() => startAutoSync(() => refresh({ fromSync: true })), [refresh])
+
+  // Record autopay payments that came due (on start, and when the date rolls over).
+  useEffect(() => {
+    if (!state.ready || !state.settings.onboarded) return
+    reconcileAutopay(state.settings.currency, today)
+      .then((n) => (n ? refresh() : undefined))
+      .catch(() => {})
+  }, [state.ready, state.settings.onboarded, state.settings.currency, state.bills, today, refresh])
 
   // Keep derived dates fresh when the app is left open overnight.
   useEffect(() => {
@@ -195,24 +233,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [state.settings.theme, state.settings.accent])
 
-  // Soft PIN lock (privacy curtain — data itself stays on-device, unencrypted)
+  // Auto-lock: when the tab is switched / the phone switches apps (page hidden), and optionally when
+  // the window loses focus. Pickers, the camera and the fingerprint prompt suspend this (lockGuard).
+  const lockOn = state.settings.lockEnabled && Boolean(state.settings.pinHash)
+  const delayMs = (state.settings.autoLockDelay ?? 0) * 1000
+  const lockOnBlur = Boolean(state.settings.lockOnBlur)
   useEffect(() => {
-    if (!state.ready || initialisedLock.current) return
-    initialisedLock.current = true
-    if (state.settings.lockEnabled && state.settings.pinHash) setLocked(true)
-  }, [state.ready, state.settings.lockEnabled, state.settings.pinHash])
-
-  // Re-lock when the tab is hidden for a while
-  useEffect(() => {
-    if (!state.settings.lockEnabled) return
+    if (!lockOn) return
     let hiddenAt = 0
-    const onVisibility = () => {
-      if (document.hidden) hiddenAt = Date.now()
-      else if (hiddenAt && Date.now() - hiddenAt > 60_000) setLocked(true)
+    let timer: number | undefined
+    const lockNow = () => {
+      if (!isAutoLockSuspended()) setLocked(true)
     }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        hiddenAt = Date.now()
+        if (delayMs === 0) lockNow()
+      } else {
+        if (hiddenAt && Date.now() - hiddenAt >= delayMs) lockNow()
+        hiddenAt = 0
+      }
+    }
+    const onBlur = () => {
+      window.clearTimeout(timer)
+      // Small grace period: focus briefly moving to a browser prompt shouldn't lock.
+      timer = window.setTimeout(() => {
+        if (!document.hasFocus()) lockNow()
+      }, Math.max(1500, delayMs))
+    }
+    const onFocus = () => window.clearTimeout(timer)
     document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
-  }, [state.settings.lockEnabled])
+    window.addEventListener('pagehide', lockNow)
+    if (lockOnBlur) {
+      window.addEventListener('blur', onBlur)
+      window.addEventListener('focus', onFocus)
+    }
+    return () => {
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pagehide', lockNow)
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [lockOn, delayMs, lockOnBlur])
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -232,38 +295,97 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [refresh],
   )
 
+
   const unlock = useCallback(
-    async (pin: string) => {
-      const { pinSalt, pinHash } = state.settings
-      if (!pinSalt || !pinHash) return true
-      const hash = await sha256Hex(`${pinSalt}:${pin}`)
-      if (hash === pinHash) {
+    async (pin: string): Promise<UnlockResult> => {
+      const current = (await db.settings.get('settings')) ?? state.settings
+      const { pinSalt, pinHash } = current
+      if (!pinSalt || !pinHash) {
         setLocked(false)
-        return true
+        return { ok: true }
       }
-      return false
+      const until = current.pinLockedUntil ? Date.parse(current.pinLockedUntil) : 0
+      if (until > Date.now()) return { ok: false, retryInMs: until - Date.now() }
+      if (await verifyPin(pin, pinSalt, pinHash)) {
+        // Quietly upgrade legacy SHA-256 PIN hashes to PBKDF2.
+        const upgrade = !pinHash.startsWith('pbkdf2$') && crypto.subtle ? { pinHash: await hashPin(pin, pinSalt) } : {}
+        await dbUpdateSettings({ pinFailCount: 0, pinLockedUntil: undefined, ...upgrade })
+        setLocked(false)
+        await refresh({ fromSync: true })
+        return { ok: true }
+      }
+      const fails = (current.pinFailCount ?? 0) + 1
+      const wait = lockoutMs(fails)
+      await dbUpdateSettings({
+        pinFailCount: fails,
+        pinLockedUntil: wait ? new Date(Date.now() + wait).toISOString() : undefined,
+      })
+      await refresh({ fromSync: true })
+      return { ok: false, retryInMs: wait || undefined }
     },
-    [state.settings],
+    [state.settings, refresh],
   )
 
+  const unlockWithBiometric = useCallback(async () => {
+    const s = state.settings
+    if (!s.biometricCredentialId) return false
+    const ok = await verifyBiometric({ id: s.biometricCredentialId, publicKey: s.biometricPublicKey, alg: s.biometricAlg })
+    if (ok) {
+      setLocked(false)
+      if (s.pinFailCount) {
+        await dbUpdateSettings({ pinFailCount: 0, pinLockedUntil: undefined })
+        await refresh({ fromSync: true })
+      }
+    }
+    return ok
+  }, [state.settings, refresh])
+
   const lock = useCallback(() => {
-    if (state.settings.lockEnabled) setLocked(true)
-  }, [state.settings.lockEnabled])
+    if (state.settings.lockEnabled && state.settings.pinHash) setLocked(true)
+  }, [state.settings.lockEnabled, state.settings.pinHash])
 
   const setPin = useCallback(
     async (pin: string) => {
       const salt = randomSalt()
-      const hash = await sha256Hex(`${salt}:${pin}`)
-      await saveSettings({ pinSalt: salt, pinHash: hash, lockEnabled: true })
+      const hash = await hashPin(pin, salt)
+      await saveSettings({ pinSalt: salt, pinHash: hash, lockEnabled: true, pinFailCount: 0, pinLockedUntil: undefined })
       setLocked(false)
     },
     [saveSettings],
   )
 
   const removePin = useCallback(async () => {
-    await saveSettings({ pinSalt: undefined, pinHash: undefined, lockEnabled: false })
+    await saveSettings({
+      pinSalt: undefined,
+      pinHash: undefined,
+      lockEnabled: false,
+      biometricCredentialId: undefined,
+      biometricPublicKey: undefined,
+      biometricAlg: undefined,
+      pinFailCount: 0,
+      pinLockedUntil: undefined,
+    })
     setLocked(false)
   }, [saveSettings])
+
+  const setBiometric = useCallback(
+    async (cred: BiometricCredential | null) => {
+      await saveSettings({
+        biometricCredentialId: cred?.id,
+        biometricPublicKey: cred?.publicKey,
+        biometricAlg: cred?.alg,
+      })
+    },
+    [saveSettings],
+  )
+
+  /** Forgot-PIN escape hatch: erase this device (other linked devices and backups are untouched). */
+  const resetDevice = useCallback(async () => {
+    setSyncState(null)
+    await wipeAll()
+    setLocked(false)
+    await refresh({ fromSync: true })
+  }, [refresh])
 
   const installApp = useCallback(async () => {
     const evt = installEvent.current
@@ -305,6 +427,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const subscriptions = useMemo(() => detectSubscriptions(state.transactions, today), [state.transactions, today])
+  const duplicates = useMemo(() => findDuplicates(state.transactions, today), [state.transactions, today])
 
   // Local notification for bills due soon (only while the app is open — no server).
   useEffect(() => {
@@ -344,6 +467,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     safe,
     anomalies,
     subscriptions,
+    duplicates,
     refresh,
     saveSettings,
     notify,
@@ -351,9 +475,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dismissToast,
     locked,
     unlock,
+    unlockWithBiometric,
     lock,
     setPin,
     removePin,
+    setBiometric,
+    resetDevice,
     canInstall,
     installApp,
     loadSample,
