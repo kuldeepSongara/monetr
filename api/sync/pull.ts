@@ -86,13 +86,19 @@ interface Row {
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (preflight(req, res)) return
-  const { syncId, auth } = body(req)
+  const { syncId, auth, known } = body(req)
   if (typeof syncId !== 'string' || !SYNC_ID.test(syncId)) return res.status(400).json({ error: 'Invalid sync ID' })
   if (typeof auth !== 'string' || !AUTH.test(auth)) return res.status(400).json({ error: 'Missing auth token' })
 
   try {
     const sql = await sqlClient()
     await ensureTable(sql)
+    // Check the version first: when the device already has it, skip sending the snapshot at all.
+    const meta = (await sql`SELECT version, updated_at, auth_hash FROM sync_snapshots WHERE sync_id = ${syncId}`) as Omit<Row, 'data'>[]
+    if (!meta.length) return res.status(404).json({ error: 'Not found' })
+    if (meta[0].auth_hash && meta[0].auth_hash === hashAuth(auth) && typeof known === 'number' && known === meta[0].version) {
+      return res.status(200).json({ unchanged: true, version: meta[0].version, updatedAt: meta[0].updated_at })
+    }
     const rows = (await sql`
       SELECT encode(data, 'base64') AS data, version, updated_at, auth_hash
       FROM sync_snapshots WHERE sync_id = ${syncId}

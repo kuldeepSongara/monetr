@@ -76,8 +76,14 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
 
   const last = mine.length ? mine[mine.length - 1] : null
   const lastPaid = last?.paidDate ?? null
-  const recent = mine.slice(-6)
-  const typicalAmount = recent.length ? Math.round(median(recent.map((p) => p.baseAmount))) : bill.baseAmount
+  // With no payments recorded, the bill's date is when the first payment is due.
+  const anchor = bill.anchorDate || today
+  const recent = mine.filter((p) => !p.amountUnknown && p.baseAmount > 0).slice(-6)
+  // An amount you edited after the last payment is what to expect next; otherwise trust what was paid.
+  const editedSince = Boolean(bill.amountChangedAt && last && bill.amountChangedAt > (last.updatedAt ?? last.createdAt))
+  // Variable bills: what you've actually paid recently is the best guess; the estimate is a fallback.
+  const fromHistory = recent.length ? Math.round(median((bill.variable ? recent.slice(-3) : recent).map((p) => p.baseAmount))) : 0
+  const typicalAmount = fromHistory && (bill.variable || !editedSince) ? fromHistory : bill.baseAmount
 
   const gaps: number[] = []
   for (let i = 1; i < mine.length; i++) {
@@ -88,7 +94,6 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
   const medianGap = recentGaps.length ? Math.round(median(recentGaps)) : null
   const consistency = recentGaps.length >= 2 && medianGap ? 1 - Math.min(1, stdDev(recentGaps) / medianGap) : 0
 
-  const anchor = bill.anchorDate || today
   const startFrom = lastPaid ?? anchor
   let nextDue: ISODate | null = null
   let basis: BillSchedule['basis'] = 'none'
@@ -112,6 +117,10 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
     basis = 'fixed-day'
     confidence = mine.length >= 2 ? 0.78 + 0.12 * consistency : 0.62
     cadenceDays = monthStep * 30.44
+  } else if (!lastPaid) {
+    nextDue = anchor
+    basis = 'anchor'
+    confidence = 0.4
   } else if (bill.frequency === 'custom' && bill.intervalDays && bill.intervalDays > 0) {
     nextDue = addDays(startFrom, bill.intervalDays)
     basis = lastPaid ? 'history' : 'anchor'
@@ -174,6 +183,13 @@ export function predictBill(bill: Bill, payments: BillPayment[], today: ISODate 
     snoozed,
     missed,
   }
+}
+
+/** Amount to show for a bill: the usual amount, "~" for variable bills, or null when unknown. */
+export function expectedAmount(bill: Bill, schedule: Pick<BillSchedule, 'typicalAmount'>): { amount: number; approx: boolean } | null {
+  const amount = schedule.typicalAmount || bill.baseAmount
+  if (!amount) return null
+  return { amount, approx: Boolean(bill.variable) }
 }
 
 export function frequencyLabel(bill: Bill): string {

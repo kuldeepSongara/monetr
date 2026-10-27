@@ -23,7 +23,8 @@ import { Badge, Button, Card, EmptyState, ProgressBar, SectionTitle, cn } from '
 import { addDays, dueLabel, formatDate, shiftPeriod } from '../lib/dates'
 import { changePct, byCategory, dailySeries, totals, txnRange } from '../lib/analytics'
 import { formatMoney } from '../lib/money'
-import type { WidgetId } from '../types'
+import type { Bill, WidgetId } from '../types'
+import { expectedAmount, type BillSchedule } from '../lib/bills'
 
 export function Dashboard() {
   const {
@@ -213,7 +214,7 @@ export function Dashboard() {
                       {bill.name}
                       <span className="text-muted">
                         {' '}
-                        · {formatMoney(schedule!.typicalAmount || bill.baseAmount, currency)}
+                        · {billAmountText(bill, schedule!, currency)}
                       </span>
                     </span>
                     <Badge tone={schedule!.status === 'overdue' ? 'bad' : 'warn'}>
@@ -364,7 +365,7 @@ export function Dashboard() {
                       </div>
                       <div className="text-right">
                         <p className="tnum text-[12px] font-semibold text-ink">
-                          {formatMoney(schedule!.typicalAmount || bill.baseAmount, currency)}
+                          {billAmountText(bill, schedule!, currency)}
                         </p>
                         {schedule!.status === 'overdue' ? (
                           <p className="text-[10px] font-semibold text-bad">Overdue</p>
@@ -484,4 +485,9 @@ export function Dashboard() {
       />
     </div>
   )
+}
+
+function billAmountText(bill: Bill, schedule: BillSchedule, currency: string): string {
+  const e = expectedAmount(bill, schedule)
+  return e ? `${e.approx ? '~' : ''}${formatMoney(e.amount, currency)}` : 'amount varies'
 }

@@ -19,6 +19,7 @@ import { useApp } from '../store'
 import { cn } from './ui'
 import { TransactionEditor, type EditorSeed } from './TransactionEditor'
 import { formatDate } from '../lib/dates'
+import { getSyncState } from '../lib/sync'
 import { ImportNotifier, ImportStatus } from './ImportStatus'
 
 const NAV = [
@@ -130,7 +131,7 @@ export function Shell() {
             <Plus className="h-4 w-4" /> Add transaction
           </button>
           <p className="pt-2 text-center text-[10px] leading-relaxed text-muted/70">
-            Data stays on this device · v1.0
+            {getSyncState() ? 'Saved on this device · end-to-end encrypted sync on' : 'Saved only on this device · sync off'} · v1.0
           </p>
         </div>
       </aside>

@@ -54,6 +54,8 @@ export interface Settings {
   autoSwitchActive: boolean
   dashboardWidgets: WidgetId[]
   schemaVersion: number
+  /** When a recovery kit was last created (on any linked device). */
+  recoveryKitAt?: string
   /** Last time a setting that syncs across devices changed. */
   sharedUpdatedAt?: string
   createdAt: string
@@ -82,6 +84,7 @@ export const SHARED_SETTING_KEYS = [
   'activeProfileId',
   'failoverEnabled',
   'autoSwitchActive',
+  'recoveryKitAt',
 ] as const satisfies readonly (keyof Settings)[]
 
 export interface ProfileHealth {
@@ -175,6 +178,8 @@ export interface Bill {
   name: string
   merchant?: string
   categoryId: string
+  /** For bills whose amount changes (electricity, water): `amount` is only an estimate and may be 0. */
+  variable?: boolean
   amount: number
   currency: string
   fxRate: number
@@ -192,6 +197,8 @@ export interface Bill {
   active: boolean
   notes?: string
   split?: BillSplit
+  /** When the amount was last edited — newer than the last payment means it's the amount to expect. */
+  amountChangedAt?: string
   snoozedUntil?: ISODate
   archived?: boolean
   createdAt: string
@@ -211,6 +218,8 @@ export interface BillPayment {
   note?: string
   /** Recorded automatically for an autopay bill on its due date. */
   autoRecorded?: boolean
+  /** The date is known but not the amount (a variable bill's past payment you didn't note). */
+  amountUnknown?: boolean
   /** For auto-recorded payments: the user confirmed the deducted amount. */
   verified?: boolean
   /** Share owed back by the bill's split partner for this payment (bill minor units). */

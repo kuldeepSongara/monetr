@@ -52,6 +52,7 @@ After that, devices sync automatically when you make changes, open the app, or c
 - **Share charts** — a PNG of total, category split and spending over time for family or friends (Dashboard or Insights). This month by default; amounts or percentages only; hide categories. No merchants, notes or transactions.
 - **Investments** — holdings derived from buy/sell/dividend/interest/fee transactions: quantity, average cost, realised and unrealised P/L. Currency profiles per country, and transfers between them recorded with the bank's real debited/credited amounts.
 - **flagIt** — AI review of your actual numbers (spikes, duplicates, subscriptions, likely FX fees), habit forecast, “before you buy” check against budget and bills, and statement import from screenshot/PDF/CSV/text with an editable review list (duplicates and low-confidence lines unticked).
+- **Compare periods** — Insights → Compare: this period against the previous one, the same time last year, or dates you pick. A running period is compared with the same number of days, with a running-total chart and per-category changes.
 - **Insights** — anomaly detection, recurring-subscription detection (weekly to yearly) with AI audit, digest, and “ask about my spending”.
 - **Lock** — PIN plus Touch ID / Android fingerprint (WebAuthn platform authenticator). Locks the moment you switch tabs or apps (or after 30 s / 1 min / 5 min), optionally on window blur. Wrong-PIN backoff. The PIN syncs; fingerprint is enabled per device.
 - **AI profiles** — Gemini, OpenAI, Anthropic, OpenRouter, Groq, Cerebras, DeepSeek, Mistral, xAI, Together, Ollama and any OpenAI-compatible endpoint. Overloaded/rate-limited calls are retried with backoff, then each profile's backup models (same key), then the next profile. Image/PDF requests only go to profiles that can read them. CSV statements and quick add work without AI.
@@ -67,6 +68,10 @@ After that, devices sync automatically when you make changes, open the app, or c
 What syncs: everything — transactions, bills and payments, budgets, rules, investments, flagIt reviews, currency profiles, appearance (theme, accent, dashboard layout), money settings, AI profiles and failover settings, and the PIN/auto-lock settings. Only the fingerprint key (tied to each device's sensor), wrong-PIN counters and notification permission stay per device. Set up on the laptop, scan one QR on the phone, done; later edits on either device appear on the other.
 
 How it works: a pairing code `mtr1.<syncId>.<key>` (inside the QR) holds a random 256-bit key that never leaves your devices. Each sync pulls the encrypted snapshot, decrypts and merges it record by record (newest `updatedAt` wins; deletions travel as tombstones), writes the result locally, then encrypts and pushes it with optimistic versioning. A write token derived from the key stops anyone else overwriting your snapshot. You can turn off “Sync AI profiles” if you'd rather keep API keys on one device.
+
+**Recovery kit.** Settings → Cloud sync → Recovery kit locks the pairing code with a password (PBKDF2-SHA256, 600k iterations, AES-GCM) into an image with a QR. Email it to yourself; the password is never stored. If every device is wiped, open the kit's link (or paste its code) and enter the password.
+
+**Free tier.** Snapshots are compressed before encryption — a few years of data is well under 1 MB. Syncs where nothing changed skip the download.
 
 Running the app locally but syncing through the deployment? Set **Sync server** in Settings → Cloud sync to your Vercel URL.
 

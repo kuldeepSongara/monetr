@@ -480,6 +480,15 @@ export async function updateTransaction(id: string, input: TxnInput, baseCurrenc
   if (!existing) return
   const currency = input.currency ?? existing.currency
   const fxRate = input.fxRate ?? existing.fxRate
+  // The expense logged with a bill payment and the payment are the same event: keep them in step,
+  // so editing the expense's date or amount moves the bill's schedule too.
+  const payments = await db.billPayments.filter((p) => p.txnId === id).toArray()
+  if (payments.length) {
+    const amount = Math.abs(input.amount)
+    await db.billPayments.bulkPut(
+      payments.map((p) => ({ ...p, paidDate: input.date, amount, currency, fxRate, baseAmount: toBaseMinor(amount, currency, fxRate, baseCurrency), updatedAt: nowISO() })),
+    )
+  }
   await db.transactions.put({
     ...existing,
     date: input.date,
@@ -573,6 +582,7 @@ export interface BillInput {
   leadDays: number
   notes?: string
   split?: Bill['split'] | null
+  variable?: boolean
 }
 
 /** The split partner's share of one payment, in the bill's minor units. */
@@ -587,7 +597,7 @@ function splitFields(bill: Bill, amountMinor: number): Pick<BillPayment, 'splitA
   return share ? { splitAmount: share, splitName: bill.split?.name } : {}
 }
 
-export async function addBill(input: BillInput, baseCurrency: string): Promise<Bill> {
+export async function addBill(input: BillInput, baseCurrency: string, opts: { seedPayment?: boolean; lastAmount?: number } = {}): Promise<Bill> {
   const currency = input.currency ?? baseCurrency
   const at = nowISO()
   const bill: Bill = {
@@ -595,6 +605,7 @@ export async function addBill(input: BillInput, baseCurrency: string): Promise<B
     name: input.name.trim() || 'Bill',
     merchant: input.merchant?.trim() || undefined,
     categoryId: input.categoryId,
+    variable: input.variable || undefined,
     amount: Math.abs(input.amount),
     currency,
     fxRate: input.fxRate ?? 1,
@@ -613,16 +624,19 @@ export async function addBill(input: BillInput, baseCurrency: string): Promise<B
   }
   await db.bills.put(bill)
 
-  // Seed one payment record from the anchor so predictions have a starting point.
-  if (input.anchorDate <= todayISO()) {
+  // "Last paid on": record that payment so predictions have a starting point. When the date is
+  // when the first payment is due instead (seedPayment: false), nothing is recorded.
+  if (opts.seedPayment !== false && input.anchorDate <= todayISO()) {
+    const paid = opts.lastAmount && opts.lastAmount > 0 ? opts.lastAmount : bill.amount
     await db.billPayments.put({
       id: uid('bp_'),
       billId: bill.id,
       paidDate: input.anchorDate,
-      amount: bill.amount,
+      amount: paid,
       currency: bill.currency,
       fxRate: bill.fxRate,
-      baseAmount: bill.baseAmount,
+      baseAmount: toBaseMinor(paid, bill.currency, bill.fxRate, baseCurrency),
+      ...(paid ? {} : { amountUnknown: true }),
       createdAt: at,
       updatedAt: at,
     })
@@ -652,6 +666,8 @@ export async function updateBill(id: string, input: BillInput, baseCurrency: str
     leadDays: input.leadDays,
     notes: input.notes?.trim() || undefined,
     split: input.split === undefined ? existing.split : (input.split ?? undefined),
+    variable: input.variable === undefined ? existing.variable : input.variable || undefined,
+    amountChangedAt: Math.abs(input.amount) !== existing.amount || currency !== existing.currency ? nowISO() : existing.amountChangedAt,
     updatedAt: nowISO(),
   })
 }
@@ -714,6 +730,39 @@ export async function markBillPaid(
   await db.billPayments.put(payment)
   await db.bills.put({ ...bill, snoozedUntil: undefined, updatedAt: at })
   return payment
+}
+
+/**
+ * Set when a bill was last paid: moves the latest recorded payment (and the expense logged with it)
+ * to `date`, or records one if there's no payment yet. Next due dates follow from it.
+ */
+export async function setLastPaidDate(billId: string, date: ISODate): Promise<void> {
+  const bill = await db.bills.get(billId)
+  if (!bill) return
+  const mine = (await db.billPayments.where('billId').equals(billId).toArray()).sort((a, b) => a.paidDate.localeCompare(b.paidDate))
+  const latest = mine[mine.length - 1]
+  const at = nowISO()
+  if (latest) {
+    if (latest.paidDate === date) return
+    await db.billPayments.put({ ...latest, paidDate: date, updatedAt: at })
+    if (latest.txnId) {
+      const txn = await db.transactions.get(latest.txnId)
+      if (txn) await db.transactions.put({ ...txn, date, updatedAt: at })
+    }
+    return
+  }
+  await db.billPayments.put({
+    id: uid('bp_'),
+    billId,
+    paidDate: date,
+    amount: bill.amount,
+    currency: bill.currency,
+    fxRate: bill.fxRate,
+    baseAmount: bill.baseAmount,
+    ...(bill.amount ? {} : { amountUnknown: true }),
+    createdAt: at,
+    updatedAt: at,
+  })
 }
 
 export async function deletePayment(id: string, deleteTxn = true): Promise<void> {
@@ -1126,6 +1175,13 @@ export function reconcileAutopay(baseCurrency: string, today: ISODate = todayISO
         const schedule = predictBill(bill, all, today)
         if (!schedule.nextDue || schedule.nextDue > today) break
         const due = schedule.nextDue
+        // Variable bills: record what was taken last time (you confirm the real amount). With no
+        // amount to go on, leave it as a reminder instead of inventing one.
+        const lastKnown = bill.variable
+          ? [...all].filter((p) => p.billId === bill.id && !p.amountUnknown && p.amount > 0).sort((a, b) => a.paidDate.localeCompare(b.paidDate)).at(-1)?.amount
+          : undefined
+        const amt = lastKnown ?? bill.amount
+        if (!amt) break
         const paymentId = `bp_auto_${bill.id}_${due}`
         // The user removed this auto payment — respect that and leave the bill overdue.
         if (deleted.has(paymentId) || all.some((p) => p.id === paymentId)) break
@@ -1136,10 +1192,10 @@ export function reconcileAutopay(baseCurrency: string, today: ISODate = todayISO
         await db.transactions.put({
           id: txnId,
           date: due,
-          amount: bill.amount,
+          amount: amt,
           currency: bill.currency,
           fxRate: bill.fxRate,
-          baseAmount: toBaseMinor(bill.amount, bill.currency, bill.fxRate, baseCurrency),
+          baseAmount: toBaseMinor(amt, bill.currency, bill.fxRate, baseCurrency),
           type: 'expense',
           categoryId: bill.categoryId,
           merchant: bill.merchant || bill.name,
@@ -1155,12 +1211,12 @@ export function reconcileAutopay(baseCurrency: string, today: ISODate = todayISO
           paidDate: due,
           currency: bill.currency,
           fxRate: bill.fxRate,
-          amount: bill.amount,
-          baseAmount: toBaseMinor(bill.amount, bill.currency, bill.fxRate, baseCurrency),
+          amount: amt,
+          baseAmount: toBaseMinor(amt, bill.currency, bill.fxRate, baseCurrency),
           txnId,
           autoRecorded: true,
           verified: false,
-          ...splitFields(bill, bill.amount),
+          ...splitFields(bill, amt),
           createdAt: at,
           updatedAt: at,
         }

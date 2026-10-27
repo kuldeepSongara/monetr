@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link2 } from 'lucide-react'
 import { useApp } from '../../store'
 import { Button, Modal } from '../ui'
-import { linkWithPairing, syncNow, syncSupported, takePendingLink, type ParsedPairing } from '../../lib/sync'
+import { linkWithPairing, syncNow, syncSupported, takePendingKit, takePendingLink, type ParsedPairing } from '../../lib/sync'
+import { KitUnlock } from './KitUnlock'
 import { updateSettings } from '../../db/db'
 
 /** Shown when Monetr was opened from a sync QR / link (`#/link?code=…`). */
@@ -10,15 +11,34 @@ export function PendingLink() {
   const { settings, refresh, notify } = useApp()
   const [pending, setPending] = useState<ParsedPairing | null>(null)
   const [busy, setBusy] = useState(false)
+  const [kit, setKit] = useState<string | null>(null)
 
   useEffect(() => {
     setPending(takePendingLink(true))
+    setKit(takePendingKit(true))
   }, [])
+
+  if (kit) {
+    return (
+      <KitUnlock
+        kit={kit}
+        onClose={() => {
+          takePendingKit()
+          setKit(null)
+        }}
+        onUnlocked={async (p) => {
+          takePendingKit()
+          setKit(null)
+          await accept(p)
+        }}
+      />
+    )
+  }
 
   if (!pending) return null
 
-  async function accept() {
-    if (!pending) return
+  async function accept(chosen: ParsedPairing | null = pending) {
+    if (!chosen) return
     const unsupported = syncSupported()
     if (unsupported) {
       notify(unsupported, 'error')
@@ -27,7 +47,7 @@ export function PendingLink() {
     setBusy(true)
     try {
       takePendingLink()
-      linkWithPairing(pending)
+      linkWithPairing(chosen)
       if (!settings.onboarded) await updateSettings({ onboarded: true })
       await syncNow()
       await refresh({ fromSync: true })
@@ -62,7 +82,7 @@ export function PendingLink() {
           >
             Not now
           </Button>
-          <Button className="flex-[2]" onClick={accept} loading={busy}>
+          <Button className="flex-[2]" onClick={() => accept()} loading={busy}>
             <Link2 className="h-4 w-4" /> Link and sync
           </Button>
         </div>

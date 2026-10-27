@@ -58,3 +58,33 @@ describe('predictBill — fixed day', () => {
     expect(s.missed).toBe(0)
   })
 })
+
+describe('predictBill — last paid date drives the schedule', () => {
+  it('moving the last payment moves the next due date', () => {
+    const b = bill({ dueDay: undefined, anchorDate: '2026-10-01' })
+    expect(predictBill(b, [pay('2026-10-01')], '2026-10-20').nextDue).toBe('2026-11-01')
+    expect(predictBill(b, [pay('2026-10-15')], '2026-10-20').nextDue).toBe('2026-11-15')
+  })
+  it('not paid yet: the first payment is due on the bill date', () => {
+    const b = bill({ dueDay: undefined, frequency: 'weekly', anchorDate: '2026-11-03' })
+    expect(predictBill(b, [], '2026-10-26').nextDue).toBe('2026-11-03')
+  })
+})
+
+describe('predictBill — edited amount', () => {
+  it('uses the edited amount until a newer payment is recorded', () => {
+    const p = { ...pay('2026-10-01'), createdAt: '2026-10-01T10:00:00Z', baseAmount: 6000 }
+    const b = bill({ baseAmount: 7000, amountChangedAt: '2026-10-20T10:00:00Z' })
+    expect(predictBill(b, [p], '2026-10-21').typicalAmount).toBe(7000)
+    expect(predictBill({ ...b, amountChangedAt: undefined }, [p], '2026-10-21').typicalAmount).toBe(6000)
+  })
+})
+
+describe('predictBill — variable bills', () => {
+  it('expects about what was paid recently and ignores payments with no amount', () => {
+    const b = bill({ variable: true, baseAmount: 0, amount: 0 })
+    const p = (d: string, amt: number, unknown = false): BillPayment => ({ ...pay(d), baseAmount: amt, amount: amt, amountUnknown: unknown || undefined })
+    expect(predictBill(b, [p('2026-07-01', 0, true)], '2026-07-10').typicalAmount).toBe(0)
+    expect(predictBill(b, [p('2026-07-01', 8000), p('2026-08-01', 12000), p('2026-09-01', 9000), p('2026-10-01', 0, true)], '2026-10-10').typicalAmount).toBe(9000)
+  })
+})

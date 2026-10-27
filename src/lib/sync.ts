@@ -195,6 +195,18 @@ export function linkWithPairing(p: ParsedPairing): SyncState {
 /* -------------------------------------------------------------------------- */
 
 const PENDING_KEY = 'monetr:pendingLink'
+const PENDING_KIT_KEY = 'monetr:pendingKit'
+
+/** A recovery kit opened from its QR / link (`#/link?kit=…`), waiting for its password. */
+export function takePendingKit(peek = false): string | null {
+  try {
+    const kit = sessionStorage.getItem(PENDING_KIT_KEY)
+    if (kit && !peek) sessionStorage.removeItem(PENDING_KIT_KEY)
+    return kit
+  } catch {
+    return null
+  }
+}
 
 /** Called once at startup: stash a `#/link?code=…` from the URL and clean the address bar. */
 export function capturePendingLink(): void {
@@ -203,6 +215,8 @@ export function capturePendingLink(): void {
     if (!hash.startsWith('#/link')) return
     const parsed = parsePairing(hash)
     if (parsed) sessionStorage.setItem(PENDING_KEY, JSON.stringify(parsed))
+    const kit = hash.match(/[?&]kit=([^&#\s]+)/)
+    if (kit) sessionStorage.setItem(PENDING_KIT_KEY, decodeURIComponent(kit[1]))
     history.replaceState(null, '', `${location.pathname}${location.search}#/`)
   } catch {
     /* ignore */
@@ -489,9 +503,30 @@ export function syncNow(): Promise<SyncStatus['lastResult']> {
     for (let attempt = 0; attempt < 3; attempt++) {
       let remote: Snapshot | null = null
       let version = 0
+      // After a full sync, ask the server to skip the download when nothing changed since.
+      const known = attempt === 0 && state.fingerprint && state.version ? state.version : undefined
       try {
-        const pulled = await api(state, 'pull', { syncId: state.syncId, auth })
+        const pulled = await api(state, 'pull', { syncId: state.syncId, auth, known })
         version = Number(pulled.version) || 0
+        if (pulled.unchanged) {
+          // The cloud copy is exactly what this device merged last time, so local already holds it.
+          const local = await buildLocalSnapshot(include)
+          const fp = snapshotFingerprint(local)
+          let pushed = false
+          if (fp !== state.fingerprint) {
+            try {
+              const res = await api(state, 'push', { syncId: state.syncId, auth, deviceId: state.deviceId, baseVersion: version, data: await encryptSnapshot(local, state.key) })
+              version = Number(res.version) || version + 1
+              pushed = true
+            } catch (err) {
+              if (err instanceof SyncHttpError && err.status === 409) continue
+              throw err
+            }
+          }
+          const at = new Date().toISOString()
+          patchSyncState({ version, lastSyncedAt: at, lastError: undefined, fingerprint: fp })
+          return { at, changed: 0, pushed }
+        }
         if (!pulled.legacy && typeof pulled.data === 'string') {
           try {
             remote = await decryptSnapshot(pulled.data, state.key)

@@ -18,6 +18,9 @@ import {
   type ParsedPairing,
 } from '../../lib/sync'
 import { relativeTime } from '../../lib/dates'
+import { parseKit } from '../../lib/recovery'
+import { RecoveryKit } from './RecoveryKit'
+import { KitUnlock } from './KitUnlock'
 import { updateSettings } from '../../db/db'
 
 // The scanner pulls in a QR decoder; load it only when the camera is opened.
@@ -36,6 +39,7 @@ export function SyncPanel({ notify }: { notify: (m: string, k?: 'info' | 'succes
   const [showPair, setShowPair] = useState(false)
   const [scanOpen, setScanOpen] = useState(false)
   const [code, setCode] = useState('')
+  const [pendingKit, setPendingKit] = useState<string | null>(null)
   const [confirmUnlink, setConfirmUnlink] = useState(false)
   const [server, setServer] = useState(state?.server ?? '')
   const unsupported = syncSupported()
@@ -75,6 +79,12 @@ export function SyncPanel({ notify }: { notify: (m: string, k?: 'info' | 'succes
   }
 
   function linkFromText(text: string) {
+    const kit = parseKit(text)
+    if (kit) {
+      setScanOpen(false)
+      setPendingKit(kit)
+      return
+    }
     const parsed = parsePairing(text)
     if (!parsed) {
       notify('That is not a Monetr sync code. Scan the QR shown in Settings → Cloud sync on your other device.', 'error')
@@ -128,7 +138,7 @@ export function SyncPanel({ notify }: { notify: (m: string, k?: 'info' | 'succes
             </Button>
           </div>
           <div className="flex gap-2">
-            <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="…or paste a sync code / link" />
+            <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="…or paste a sync code, link or recovery code" />
             <Button variant="ghost" onClick={() => linkFromText(code)} disabled={!code.trim() || Boolean(unsupported)}>
               <Link2 className="h-4 w-4" /> Link
             </Button>
@@ -152,6 +162,7 @@ export function SyncPanel({ notify }: { notify: (m: string, k?: 'info' | 'succes
               <Unlink className="h-3.5 w-3.5" /> Unlink
             </Button>
           </div>
+          <RecoveryKit />
           <Toggle
             checked={state.includeAiProfiles !== false}
             onChange={(v) => {
@@ -209,6 +220,14 @@ export function SyncPanel({ notify }: { notify: (m: string, k?: 'info' | 'succes
           notify('Sync unlinked on this device', 'info')
         }}
         onClose={() => setConfirmUnlink(false)}
+      />
+      <KitUnlock
+        kit={pendingKit}
+        onClose={() => setPendingKit(null)}
+        onUnlocked={async (p) => {
+          setPendingKit(null)
+          await link(p)
+        }}
       />
     </Card>
   )

@@ -47,9 +47,9 @@ function TooltipCard({
 
 type TooltipPayload = { name?: string; value?: number; color?: string; dataKey?: string }[]
 
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: TooltipPayload; label?: string }) {
+function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: TooltipPayload; label?: string | number }) {
   if (!active || !payload?.length) return null
-  const heading = label && /^\d{4}-\d{2}-\d{2}$/.test(label) ? formatDate(label, 'medium') : label ?? ''
+  const heading = typeof label === 'number' ? `Day ${label}` : label && /^\d{4}-\d{2}-\d{2}$/.test(label) ? formatDate(label, 'medium') : label ?? ''
   return (
     <TooltipCard
       label={heading}
@@ -420,5 +420,24 @@ export function Sparkline({ values, height = 34 }: { values: number[]; height?: 
         vectorEffect="non-scaling-stroke"
       />
     </svg>
+  )
+}
+
+/* -------------------------------- comparison ------------------------------- */
+
+export function ComparisonChart({ data, labelA, labelB, height = 190 }: { data: { day: number; a?: number; b?: number }[]; labelA: string; labelB: string; height?: number }) {
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
+          <XAxis dataKey="day" tick={AXIS} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={18} tickFormatter={(d: number) => `Day ${d}`} />
+          <YAxis hide />
+          <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'rgb(var(--line))' }} />
+          <Line type="monotone" dataKey="b" name={labelB} stroke="rgb(var(--muted))" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
+          <Line type="monotone" dataKey="a" name={labelA} stroke="rgb(var(--accent))" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   )
 }

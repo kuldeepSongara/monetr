@@ -21,6 +21,7 @@ import {
   markBillPaid,
   snoozeBill,
   updateBill,
+  setLastPaidDate,
   verifyPayment,
   collectSplit,
   waiveSplit,
@@ -28,7 +29,7 @@ import {
 import type { BillPayment } from '../types'
 import { addDays, dueLabel, formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor } from '../lib/money'
-import { confidenceLabel, frequencyLabel } from '../lib/bills'
+import { confidenceLabel, expectedAmount, frequencyLabel } from '../lib/bills'
 import {
   Badge,
   Button,
@@ -55,6 +56,7 @@ export function Bills() {
   const [filter, setFilter] = useState<FilterKey>('all')
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<Bill | null>(null)
+  const [removingPayment, setRemovingPayment] = useState<BillPayment | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [paying, setPaying] = useState<Bill | null>(null)
   const [snoozing, setSnoozing] = useState<Bill | null>(null)
@@ -126,7 +128,7 @@ export function Bills() {
         .reduce((sum, b) => {
           const s = schedules.get(b.id)
           const cadence = s?.cadenceDays ?? 30.44
-          return sum + (b.baseAmount * 30.44) / Math.max(1, cadence)
+          return sum + ((s?.typicalAmount || b.baseAmount) * 30.44) / Math.max(1, cadence)
         }, 0),
     [bills, schedules],
   )
@@ -149,16 +151,17 @@ export function Bills() {
   function startPay(bill: Bill) {
     setPaying(bill)
     setPayDate(todayISO())
-    setPayAmount(majorString(bill.amount, bill.currency))
+    // Variable bills: ask for the real amount instead of pre-filling a guess.
+    setPayAmount(bill.variable || !bill.amount ? '' : majorString(bill.amount, bill.currency))
     setPayNote('')
     setCreateTxn(true)
   }
 
   async function confirmPay() {
     if (!paying) return
-    const minor = fromMajorString(payAmount, paying.currency) ?? paying.amount
+    const minor = fromMajorString(payAmount, paying.currency) ?? 0
     if (!minor || minor <= 0) {
-      notify('Enter a valid amount', 'error')
+      notify('Enter the amount you paid', 'error')
       return
     }
     setBusy(true)
@@ -289,7 +292,10 @@ export function Bills() {
                       </div>
                       <div className="text-right">
                         <p className="tnum text-sm font-bold text-ink">
-                          {formatMoney(schedule.typicalAmount || bill.baseAmount, currency)}
+                          {(() => {
+                            const e = expectedAmount(bill, schedule)
+                            return e ? `${e.approx ? '~' : ''}${formatMoney(e.amount, currency)}` : 'Varies'
+                          })()}
                         </p>
                         {schedule.status === 'overdue' ? (
                           <p className="text-[10px] font-bold text-bad">
@@ -409,14 +415,10 @@ export function Bills() {
                             <CalendarClock className="h-3 w-3 text-muted" />
                             <span className="text-ink">{formatDate(p.paidDate, 'medium')}</span>
                             {p.autoRecorded ? <Badge tone={p.verified ? 'good' : 'accent'}>{p.verified ? 'autopay ✓' : 'autopay'}</Badge> : null}
-                            <span className="tnum ml-auto font-semibold text-ink">{formatMoney(p.baseAmount, currency)}</span>
+                            <span className="tnum ml-auto font-semibold text-ink">{p.amountUnknown ? <span className="font-normal text-muted">amount not noted</span> : formatMoney(p.baseAmount, currency)}</span>
                             <button
                               type="button"
-                              onClick={async () => {
-                                await deletePayment(p.id)
-                                await refresh()
-                                notify('Payment removed', 'info')
-                              }}
+                              onClick={() => setRemovingPayment(p)}
                               className="text-muted hover:text-bad"
                               aria-label="Delete payment"
                             >
@@ -482,7 +484,13 @@ export function Bills() {
               <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
             </Field>
             <Field label={`Amount (${paying?.currency ?? currency})`}>
-              <Input value={payAmount} onChange={(e) => setPayAmount(e.target.value)} inputMode="decimal" />
+              <Input
+                value={payAmount}
+                onChange={(e) => setPayAmount(e.target.value)}
+                inputMode="decimal"
+                autoFocus={Boolean(paying?.variable)}
+                placeholder={paying && schedules.get(paying.id)?.typicalAmount ? `last ~${majorString(schedules.get(paying.id)!.typicalAmount, currency)}` : '0.00'}
+              />
             </Field>
           </div>
           <Field label="Note (optional)">
@@ -591,6 +599,25 @@ export function Bills() {
       </Modal>
 
       <Confirm
+        open={Boolean(removingPayment)}
+        title="Remove this payment?"
+        body={
+          removingPayment?.txnId
+            ? 'The payment and the expense logged with it are removed. The next due date is worked out again from the payments left.'
+            : 'The next due date is worked out again from the payments left.'
+        }
+        confirmLabel="Remove"
+        onClose={() => setRemovingPayment(null)}
+        onConfirm={async () => {
+          if (!removingPayment) return
+          await deletePayment(removingPayment.id)
+          await refresh()
+          notify('Payment removed', 'info')
+          setRemovingPayment(null)
+        }}
+      />
+
+      <Confirm
         open={Boolean(deleting)}
         title={`Delete ${deleting?.name ?? 'bill'}?`}
         body="This removes the bill and its payment history. Transactions already logged are kept."
@@ -620,7 +647,14 @@ function BillEditor({
   bill: Bill | null
   onSaved: () => Promise<void>
 }) {
-  const { categories, settings, notify } = useApp()
+  const { categories, settings, notify, payments } = useApp()
+  const latestPayment = bill
+    ? payments.filter((p) => p.billId === bill.id).sort((a, b) => a.paidDate.localeCompare(b.paidDate)).at(-1)
+    : undefined
+  /** 'paid' = the date is when you last paid it; 'due' = not paid yet, the date is when it's first due. */
+  const [dateMode, setDateMode] = useState<'paid' | 'due'>('paid')
+  const [variable, setVariable] = useState(false)
+  const [lastAmount, setLastAmount] = useState('')
   const [name, setName] = useState('')
   const [merchant, setMerchant] = useState('')
   const [amount, setAmount] = useState('')
@@ -650,13 +684,16 @@ function BillEditor({
     if (bill) {
       setName(bill.name)
       setMerchant(bill.merchant ?? '')
-      setAmount(majorString(bill.amount, bill.currency))
+      setVariable(Boolean(bill.variable))
+      setLastAmount('')
+      setAmount(bill.amount ? majorString(bill.amount, bill.currency) : '')
       setCurrency(bill.currency)
       setCategoryId(bill.categoryId)
       setFrequency(bill.frequency)
       setIntervalDays(String(bill.intervalDays ?? 30))
       setDueDay(bill.dueDay ? String(bill.dueDay) : '')
-      setAnchorDate(bill.anchorDate)
+      setDateMode(latestPayment ? 'paid' : 'due')
+      setAnchorDate(latestPayment?.paidDate ?? bill.anchorDate)
       setLeadDays(String(bill.leadDays))
       setAutoPay(bill.autoPay)
       setNotes(bill.notes ?? '')
@@ -667,13 +704,16 @@ function BillEditor({
     } else {
       setName('')
       setMerchant('')
+      setVariable(false)
+      setLastAmount('')
       setAmount('')
       setCurrency(settings.currency)
       setCategoryId('cat_utilities')
       setFrequency('monthly')
       setIntervalDays('30')
       setDueDay('')
-      setAnchorDate(todayISO())
+      setDateMode('paid')
+      setAnchorDate('')
       setLeadDays(String(settings.defaultBillLeadDays))
       setAutoPay(false)
       setNotes('')
@@ -686,13 +726,21 @@ function BillEditor({
   }
 
   async function save() {
-    const minor = fromMajorString(amount, currency) ?? 0
+    const minor = amount.trim() ? fromMajorString(amount, currency) ?? 0 : 0
     if (!name.trim()) {
       setError('Give the bill a name.')
       return
     }
-    if (!minor || minor <= 0) {
-      setError('Enter an amount above zero.')
+    if (!variable && (!minor || minor <= 0)) {
+      setError('Enter the amount — or turn on “Amount changes each time”.')
+      return
+    }
+    if (!anchorDate) {
+      setError(dateMode === 'paid' ? 'When did you last pay it?' : 'When is the first payment due?')
+      return
+    }
+    if (dateMode === 'paid' && anchorDate > todayISO()) {
+      setError('The last payment date can’t be in the future — switch to “Not paid yet”.')
       return
     }
     setSaving(true)
@@ -702,7 +750,8 @@ function BillEditor({
         name,
         merchant,
         categoryId,
-        amount: minor,
+        variable,
+        amount: Math.max(0, minor),
         currency,
         fxRate: 1,
         frequency,
@@ -726,8 +775,16 @@ function BillEditor({
               }
             : null,
       }
-      if (bill) await updateBill(bill.id, input, settings.currency)
-      else await addBill(input, settings.currency)
+      if (bill) {
+        await updateBill(bill.id, input, settings.currency)
+        // Editing the last payment moves that payment, so the next due date follows it.
+        if (dateMode === 'paid') await setLastPaidDate(bill.id, anchorDate)
+      } else {
+        await addBill(input, settings.currency, {
+          seedPayment: dateMode === 'paid',
+          lastAmount: variable && lastAmount.trim() ? fromMajorString(lastAmount, currency) ?? undefined : undefined,
+        })
+      }
       notify(bill ? 'Bill updated' : 'Bill added', 'success')
       await onSaved()
     } catch (err) {
@@ -766,9 +823,16 @@ function BillEditor({
           </Field>
         </div>
 
+        <Toggle
+          checked={variable}
+          onChange={setVariable}
+          label="Amount changes each time"
+          hint="For electricity, water, phone usage… Monetr just reminds you, and asks what you paid when you mark it paid."
+        />
+
         <div className="flex gap-2">
-          <Field label="Amount" className="flex-1">
-            <Input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder="0.00" />
+          <Field label={variable ? 'Usual amount (optional)' : 'Amount'} className="flex-1" hint={variable ? 'A rough guess helps safe-to-spend until a few payments are logged.' : undefined}>
+            <Input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" placeholder={variable ? 'e.g. 90' : '0.00'} />
           </Field>
           <Field label="Currency" className="w-28">
             <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
@@ -814,9 +878,27 @@ function BillEditor({
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Last payment / start date">
-            <Input type="date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} />
+          <Field
+            label={dateMode === 'paid' ? 'Last paid on' : 'First due on'}
+            hint={
+              <span className="flex flex-wrap gap-x-2">
+                {!latestPayment ? (
+                  <button type="button" className="font-medium text-ink underline underline-offset-2" onClick={() => setDateMode(dateMode === 'paid' ? 'due' : 'paid')}>
+                    {dateMode === 'paid' ? 'Not paid yet?' : 'Already paid it?'}
+                  </button>
+                ) : (
+                  <span>Moves your last recorded payment</span>
+                )}
+              </span>
+            }
+          >
+            <Input type="date" value={anchorDate} max={dateMode === 'paid' ? todayISO() : undefined} onChange={(e) => setAnchorDate(e.target.value)} />
           </Field>
+          {!bill && variable && dateMode === 'paid' ? (
+            <Field label="Paid last time (optional)">
+              <Input value={lastAmount} onChange={(e) => setLastAmount(e.target.value)} inputMode="decimal" placeholder="if you know it" />
+            </Field>
+          ) : null}
           <Field label="Remind me N days before">
             <Input value={leadDays} onChange={(e) => setLeadDays(e.target.value)} inputMode="numeric" />
           </Field>

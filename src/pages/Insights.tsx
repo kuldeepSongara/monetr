@@ -23,6 +23,8 @@ import { Badge, Button, Card, EmptyState, Input, Markdown, SectionTitle, Segment
 import { Heatmap, MerchantBars, MonthlyBars, WeekdayBars } from '../components/charts'
 import { ReportExport } from '../components/ReportExport'
 import { ShareCharts } from '../components/ShareCharts'
+import { ComparePeriods } from '../components/ComparePeriods'
+import { comparePeriods } from '../lib/compare'
 
 type RangeKey = 'cycle' | 'last' | '30' | '90'
 
@@ -83,7 +85,9 @@ export function Insights() {
   const previous = useMemo(() => txnRange(transactions, previousRange), [transactions, previousRange])
   const nowTotals = totals(current)
   const prevTotals = totals(previous)
-  const expenseChange = changePct(nowTotals.expense, prevTotals.expense)
+  // A running period is compared with the same number of days of the previous one, not all of it.
+  const samePrev = useMemo(() => comparePeriods(transactions, categories, range, previousRange, today), [transactions, categories, range, previousRange, today])
+  const expenseChange = changePct(nowTotals.expense, samePrev.bSameDays ?? prevTotals.expense)
 
   const months = useMemo(() => monthlySeries(transactions, 6, today), [transactions, today])
   const weekdays = useMemo(() => weekdayPattern(current, settings.weekStart), [current, settings.weekStart])
@@ -214,6 +218,12 @@ export function Insights() {
           />
         </div>
       </Card>
+
+      <ComparePeriods
+        range={range}
+        previousRange={previousRange}
+        label={rangeKey === 'cycle' ? 'This cycle' : rangeKey === 'last' ? 'Last cycle' : rangeKey === '30' ? 'Last 30 days' : 'Last 90 days'}
+      />
 
       <Card className="relative overflow-hidden border-accent/25 bg-gradient-to-br from-accent/[0.09] to-surface">
         <div className="mb-2 flex items-start justify-between gap-3">

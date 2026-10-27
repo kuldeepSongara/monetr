@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   Lightbulb,
   LineChart,
+  KeyRound,
   Lock,
   PiggyBank,
   QrCode,
@@ -82,6 +83,7 @@ const SECTIONS: FeatureSection[] = [
     title: 'Bills',
     items: [
       { icon: CalendarClock, title: 'Due-date prediction', description: 'Fixed-day bills follow their calendar day; others use the gap between your actual payments. Early or late payments never shift or duplicate a cycle, and missed payments are counted, not hidden.' },
+      { icon: Bell, title: 'Bills that change', description: 'Electricity, water and the like: turn on “Amount changes each time” and the bill is just a reminder. Mark paid asks what you paid and the date, and adds it to your spending. The usual amount is learned from recent payments.' },
       { icon: Repeat, title: 'Autopay', description: 'On the due date the payment and expense are recorded for you, then flagged so you can confirm or correct the amount that was actually taken.' },
       { icon: Users, title: 'Split with a roommate', description: 'Set a share (percent or fixed) on a bill. Each payment shows what to collect, a ready-to-send reminder, and “Got it” records their share as a refund so your spend is just your part.' },
       { icon: CheckCircle, title: 'Mark paid & snooze', description: 'Log a payment (optionally as an expense) or snooze a reminder.' },
@@ -128,6 +130,7 @@ const SECTIONS: FeatureSection[] = [
       { icon: QrCode, title: 'Link with a QR', description: 'Show the QR on one device, scan it in Monetr (or with the phone camera app) on the other.' },
       { icon: Lock, title: 'End-to-end encrypted', description: 'Data is encrypted on your device with a key that is only in the QR. The server stores ciphertext and cannot read it.' },
       { icon: Repeat, title: 'Everything, both ways', description: 'Transactions, bills, budgets, investments, appearance, AI profiles and your PIN. Change anything on either device and it shows up on the other.' },
+      { icon: KeyRound, title: 'Recovery kit', description: 'Your sync key locked with a password you choose — email it to yourself or keep it in cloud storage. If every device is wiped, scan it, enter the password, and everything comes back.' },
       { icon: Fingerprint, title: 'Per-device fingerprint', description: 'Fingerprint / Touch ID is the one thing set up on each device, because it uses that device’s sensor.' },
     ],
   },
