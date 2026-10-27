@@ -73,7 +73,7 @@ export function PotsSection() {
     <>
       <div className="flex items-center justify-between px-0.5">
         <div>
-          <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted">Savings pots</h2>
+          <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Savings pots</h2>
           <p className="text-[10px] text-muted">For one-time buys — a laptop, a phone. Paid from the pot, not one month’s budget.</p>
         </div>
         <Button size="sm" onClick={() => open(null, { kind: 'save' })}>

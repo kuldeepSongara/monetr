@@ -225,7 +225,7 @@ export function Insights() {
         label={rangeKey === 'cycle' ? 'This cycle' : rangeKey === 'last' ? 'Last cycle' : rangeKey === '30' ? 'Last 30 days' : 'Last 90 days'}
       />
 
-      <Card className="relative overflow-hidden border-accent/25 bg-gradient-to-br from-accent/[0.09] to-surface">
+      <Card className="relative overflow-hidden">
         <div className="mb-2 flex items-start justify-between gap-3">
           <div>
             <SectionTitle title="AI digest" sub={digest ? `For ${formatDate(digest.rangeStart, 'short')} – ${formatDate(digest.rangeEnd, 'short')}` : 'A short read on your money'} />
@@ -448,7 +448,7 @@ export function Insights() {
 function MiniStat({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' }) {
   return (
     <div className="rounded-xl border border-line/60 bg-surface2/40 px-2.5 py-2">
-      <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[11px] font-medium text-muted">{label}</p>
       <p className={cn('tnum mt-0.5 truncate text-[13px] font-bold', tone === 'good' ? 'text-good' : tone === 'bad' ? 'text-bad' : 'text-ink')}>
         {value}
       </p>

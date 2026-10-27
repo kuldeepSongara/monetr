@@ -3,47 +3,52 @@
 @tailwind utilities;
 
 :root {
-  --bg: 255 255 255;
+  /* Light — cool stone canvas, white sheets on top. Depth comes from the canvas, not shadows. */
+  --bg: 241 242 239;
   --surface: 255 255 255;
-  --surface-2: 250 250 250;
-  --line: 228 228 231;
-  --ink: 9 9 11;
-  --muted: 113 113 122;
-  --accent: 24 24 27;
+  --surface-2: 246 247 244;
+  --line: 226 227 222;
+  --ink: 24 26 30;
+  --muted: 108 111 118;
+  --accent: 24 26 30;
   --accent-fg: 255 255 255;
-  --good: 22 163 74;
-  --bad: 220 38 38;
-  --warn: 217 119 6;
+  --good: 26 132 87;
+  --bad: 196 64 54;
+  --warn: 176 116 26;
+  --shadow: 24 26 30;
   color-scheme: light;
 }
 
 :root[data-theme='dark'] {
-  --bg: 9 9 11;
-  --surface: 9 9 11;
-  --surface-2: 24 24 27;
-  --line: 39 39 42;
-  --ink: 250 250 250;
-  --muted: 161 161 170;
-  --accent: 250 250 250;
-  --accent-fg: 9 9 11;
-  --good: 34 197 94;
-  --bad: 239 68 68;
-  --warn: 245 158 11;
+  /* Dark — graphite layers, each step a little lighter, never pure black. */
+  --bg: 14 16 18;
+  --surface: 22 25 28;
+  --surface-2: 30 34 38;
+  --line: 41 45 51;
+  --ink: 236 237 239;
+  --muted: 150 154 161;
+  --accent: 236 237 239;
+  --accent-fg: 14 16 18;
+  --good: 72 196 138;
+  --bad: 240 110 98;
+  --warn: 228 170 72;
+  --shadow: 0 0 0;
   color-scheme: dark;
 }
 
 :root[data-theme='light'] {
-  --bg: 255 255 255;
+  --bg: 241 242 239;
   --surface: 255 255 255;
-  --surface-2: 250 250 250;
-  --line: 228 228 231;
-  --ink: 9 9 11;
-  --muted: 113 113 122;
-  --accent: 24 24 27;
+  --surface-2: 246 247 244;
+  --line: 226 227 222;
+  --ink: 24 26 30;
+  --muted: 108 111 118;
+  --accent: 24 26 30;
   --accent-fg: 255 255 255;
-  --good: 22 163 74;
-  --bad: 220 38 38;
-  --warn: 217 119 6;
+  --good: 26 132 87;
+  --bad: 196 64 54;
+  --warn: 176 116 26;
+  --shadow: 24 26 30;
   color-scheme: light;
 }
 
@@ -59,8 +64,24 @@ body,
 
 body {
   @apply bg-bg text-ink antialiased;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
+  letter-spacing: -0.006em;
   overscroll-behavior-y: none;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--ink) / 0.55);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 ::selection {
@@ -77,12 +98,24 @@ body {
 
 .tnum {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: 'tnum';
+  font-feature-settings: 'tnum', 'ss01';
+}
+
+/* Big money figures: light weight, tight, tabular — the one place the type gets expressive. */
+.figure {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum', 'ss01';
+  font-weight: 300;
+  letter-spacing: -0.045em;
+  line-height: 0.95;
 }
 
 @layer components {
   .card {
-    @apply rounded-lg border border-line bg-surface shadow-sm;
+    @apply rounded-[18px] border border-line/80 bg-surface;
+    box-shadow:
+      0 1px 0 0 rgb(255 255 255 / 0.03) inset,
+      0 1px 2px -1px rgb(var(--shadow) / 0.06);
   }
   .card-pad {
     @apply p-4 sm:p-5;
@@ -92,14 +125,15 @@ body {
   }
 
   .btn {
-    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium transition
-      active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50;
+    @apply inline-flex h-10 select-none items-center justify-center gap-2 whitespace-nowrap rounded-[10px] px-3.5 text-[13px] font-medium transition-[background-color,opacity,transform,box-shadow] duration-150
+      active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45;
   }
   .btn-primary {
-    @apply bg-ink text-bg hover:opacity-90;
+    @apply bg-ink text-bg hover:bg-ink/90;
+    box-shadow: 0 1px 0 0 rgb(255 255 255 / 0.12) inset;
   }
   .btn-soft {
-    @apply bg-surface2 text-ink hover:bg-surface2/80;
+    @apply bg-surface2 text-ink hover:bg-line/60;
   }
   .btn-ghost {
     @apply border border-line bg-surface text-ink hover:bg-surface2;
@@ -108,46 +142,46 @@ body {
     @apply bg-bad/10 text-bad hover:bg-bad/15;
   }
   .btn-sm {
-    @apply rounded-md px-2.5 py-1.5 text-xs;
+    @apply h-8 rounded-[9px] px-2.5 text-xs;
   }
   .btn-lg {
-    @apply rounded-md px-4 py-2.5 text-sm;
+    @apply h-11 rounded-[12px] px-4 text-sm;
   }
   .btn-icon {
-    @apply h-9 w-9 shrink-0 rounded-md p-0;
+    @apply h-9 w-9 shrink-0 rounded-[10px] p-0;
   }
 
   .input {
-    @apply w-full rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink placeholder:text-muted/70
-      focus:border-ink/40 focus:outline-none focus:ring-1 focus:ring-ink/10;
+    @apply h-10 w-full rounded-[10px] border border-line bg-surface2/60 px-3 text-[14px] text-ink transition-colors placeholder:text-muted/60
+      hover:border-ink/15 focus:border-ink/35 focus:bg-surface focus:outline-none focus:ring-4 focus:ring-ink/[0.06];
   }
   .textarea {
-    @apply input min-h-[84px] resize-y;
+    @apply input h-auto min-h-[84px] resize-y py-2.5;
   }
   .label {
-    @apply mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-muted;
+    @apply mb-1.5 block text-[12px] font-medium text-muted;
   }
   .select {
     @apply input appearance-none bg-[length:16px] bg-[right_0.75rem_center] bg-no-repeat pr-9;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238d97ab' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23898c93' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   }
 
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full border border-line/80 bg-surface px-3 py-1.5 text-xs font-medium text-muted transition;
+    @apply inline-flex h-8 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-xs font-medium text-muted transition-colors hover:text-ink;
   }
   .chip-active {
-    @apply border-accent/40 bg-accent/10 text-accent;
+    @apply border-ink/80 bg-ink text-bg hover:text-bg;
   }
 
   .nav-item {
     @apply flex flex-col items-center justify-center gap-1 rounded-md py-1.5 text-[10px] font-medium text-muted transition;
   }
   .nav-item-active {
-    @apply text-accent;
+    @apply text-ink;
   }
 
   .badge {
-    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide;
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium;
   }
 
   .divider {

@@ -57,10 +57,10 @@ export function Budgets() {
 
   return (
     <div className="space-y-3.5">
-      <Card className="border-accent/20 bg-gradient-to-br from-accent/[0.1] to-surface">
+      <Card>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+            <p className="flex items-center gap-1.5 text-[12px] font-medium text-muted">
               <Target className="h-3.5 w-3.5" /> Budget cycle
             </p>
             <p className="mt-1 text-sm font-semibold text-ink">
@@ -97,7 +97,7 @@ export function Budgets() {
       </Card>
 
       <div className="flex items-center justify-between px-0.5">
-        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted">Budgets</h2>
+        <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Budgets</h2>
         <Button size="sm" onClick={() => { setEditing(null); setEditorOpen(true) }}>
           <Plus className="h-3.5 w-3.5" /> Add
         </Button>
@@ -288,7 +288,7 @@ function GroupParts({ parts, total, currency }: { parts: NonNullable<import('../
 function Metric({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' }) {
   return (
     <div className="rounded-xl border border-line/60 bg-surface/60 px-2.5 py-2">
-      <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[11px] font-medium text-muted">{label}</p>
       <p className={cn('tnum mt-0.5 truncate text-[13px] font-bold', tone === 'good' ? 'text-good' : tone === 'bad' ? 'text-bad' : 'text-ink')}>
         {value}
       </p>

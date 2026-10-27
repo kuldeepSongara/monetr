@@ -701,7 +701,7 @@ export function Settings() {
 
         <div className="mt-3">
           <div className="mb-1.5 flex items-center justify-between gap-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">Recent AI activity</p>
+            <p className="text-[12px] font-medium text-muted">Recent AI activity</p>
             {logs.length ? (
               <button
                 type="button"
@@ -1385,7 +1385,7 @@ function HealthBadge({ profile }: { profile: AIProfile }) {
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-line/70 bg-surface2/40 px-2.5 py-2">
-      <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <p className="text-[11px] font-medium text-muted">{label}</p>
       <p className="tnum mt-0.5 text-sm font-bold text-ink">{value}</p>
     </div>
   )

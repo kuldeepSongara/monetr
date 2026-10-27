@@ -240,7 +240,7 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
               reduces spending in this category.
             </div>
           ) : (
-          <div className="grid grid-cols-3 gap-1 rounded-xl border border-line/70 bg-surface2 p-1">
+          <div className="grid grid-cols-3 gap-0.5 rounded-[12px] bg-line/45 p-[3px]">
             {(['expense', 'income', 'transfer'] as TxnType[]).map((t) => (
               <button
                 key={t}
@@ -253,8 +253,8 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
                   }
                 }}
                 className={cn(
-                  'rounded-lg py-2 text-xs font-semibold capitalize transition',
-                  type === t ? 'bg-surface text-ink shadow-sm' : 'text-muted',
+                  'rounded-[9px] py-2 text-[13px] font-medium capitalize transition',
+                  type === t ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(var(--shadow)/0.12),0_0_0_0.5px_rgb(var(--line))]' : 'text-muted hover:text-ink',
                 )}
               >
                 {t}
@@ -271,7 +271,7 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
                 inputMode="decimal"
                 placeholder="0.00"
                 autoFocus={!existing}
-                className="tnum text-2xl font-semibold"
+                className="figure h-14 text-[30px]"
               />
             </Field>
             <Field label="Currency" className="w-28">

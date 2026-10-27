@@ -199,9 +199,9 @@ export function Bills() {
 
   return (
     <div className="space-y-3.5">
-      <Card className="flex flex-col gap-3 border-accent/20 bg-gradient-to-br from-accent/[0.08] to-surface sm:flex-row sm:items-center">
+      <Card className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex-1">
-          <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-accent">
+          <p className="flex items-center gap-1.5 text-[12px] font-medium text-muted">
             <Repeat className="h-3.5 w-3.5" /> Recurring bills
           </p>
           <p className="tnum mt-1 text-2xl font-bold tracking-tight text-ink">{formatMoney(Math.round(monthlyTotal), currency)}</p>

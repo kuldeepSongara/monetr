@@ -33,7 +33,7 @@ function TooltipCard({
   const currency = useApp().settings.currency
   return (
     <div className="rounded-xl border border-line bg-surface px-3 py-2 shadow-pop">
-      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <p className="mb-1 text-[11px] font-medium text-muted">{label}</p>
       {rows.map((r) => (
         <p key={r.name} className="tnum flex items-center gap-2 text-xs text-ink">
           <span className="h-2 w-2 rounded-full" style={{ background: r.color }} />
@@ -203,7 +203,7 @@ export function CategoryDonut({
           </PieChart>
         </ResponsiveContainer>
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[9px] font-semibold uppercase tracking-wide text-muted">Spent</span>
+          <span className="text-[11px] font-medium text-muted">Spent</span>
           <span className="tnum text-sm font-bold text-ink">{formatMoney(total, currency, { compact: true })}</span>
         </div>
       </div>

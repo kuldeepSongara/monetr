@@ -61,12 +61,12 @@ export function ComparePeriods({ range, previousRange, label }: { range: Range; 
         <>
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-xl border border-accent/30 bg-accent/[0.06] p-2.5">
-              <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">{label}</p>
+              <p className="text-[11px] font-medium text-muted">{label}</p>
               <p className="tnum text-lg font-bold text-ink">{formatMoney(cmp.a.spent, currency)}</p>
               <p className="text-[10px] text-muted">{cmp.bSameDays !== null ? `${cmp.daysElapsed} days so far · ` : ''}{cmp.a.count} spends</p>
             </div>
             <div className="rounded-xl border border-line/70 p-2.5">
-              <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">{span(b)}</p>
+              <p className="text-[11px] font-medium text-muted">{span(b)}</p>
               <p className="tnum text-lg font-bold text-ink/80">{formatMoney(fair, currency)}</p>
               <p className="text-[10px] text-muted">
                 {cmp.bSameDays !== null ? `first ${cmp.daysElapsed} days · ${formatMoney(cmp.b.spent, currency)} in full` : `${cmp.b.count} spends`}

@@ -18,7 +18,7 @@ import {
 import { useApp } from '../store'
 import { cn } from './ui'
 import { TransactionEditor, type EditorSeed } from './TransactionEditor'
-import { formatDate } from '../lib/dates'
+import { daysBetween, formatDate, payCycle } from '../lib/dates'
 import { getSyncState } from '../lib/sync'
 import { ImportNotifier, ImportStatus } from './ImportStatus'
 
@@ -71,6 +71,11 @@ export function Shell() {
     return s && !s.snoozed && (s.status === 'due-soon' || s.status === 'overdue')
   }).length
 
+  const cycle = payCycle(today, settings.payCycleStartDay)
+  const cycleDay = daysBetween(cycle.start, today) + 1
+  const cycleLength = daysBetween(cycle.start, cycle.end) + 1
+  const cycleLine = `${formatDate(today, 'long')} — day ${cycleDay} of ${cycleLength} in this pay cycle`
+
   const openAdd = (initial?: EditorSeed) => {
     setSeed(initial ?? null)
     setEditorOpen(true)
@@ -79,12 +84,12 @@ export function Shell() {
   return (
     <div className="min-h-dvh bg-bg">
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-line/70 bg-surface/70 p-4 backdrop-blur lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-line/60 bg-bg p-4 lg:flex">
         <div className="flex items-center gap-2.5 px-1.5 py-2">
           <BrandMark size={38} />
           <div>
-            <p className="text-sm font-semibold leading-tight text-ink">Monetr</p>
-            <p className="text-[10px] leading-tight text-muted">Personal finance</p>
+            <p className="text-[15px] font-semibold leading-tight tracking-[-0.01em] text-ink">Monetr</p>
+            <p className="text-[11px] leading-tight text-muted">Your money, on your devices</p>
           </div>
         </div>
 
@@ -96,15 +101,15 @@ export function Shell() {
               end={item.to === '/'}
               className={({ isActive }) =>
                 cn(
-                  'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition',
-                  isActive ? 'bg-accent/12 text-accent' : 'text-muted hover:bg-surface2 hover:text-ink',
+                  'relative flex items-center gap-3 rounded-[11px] px-3 py-2 text-[14px] font-medium transition',
+                  isActive ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(var(--shadow)/0.08),0_0_0_1px_rgb(var(--line)/0.9)] before:absolute before:-left-4 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-accent' : 'text-muted hover:bg-surface/60 hover:text-ink',
                 )
               }
             >
               <item.icon className="h-[18px] w-[18px]" />
               <span className="flex-1">{item.title}</span>
               {item.to === '/bills' && dueCount > 0 ? (
-                <span className="rounded-full bg-bad/15 px-1.5 py-0.5 text-[10px] font-bold text-bad">{dueCount}</span>
+                <span className="tnum rounded-full bg-bad px-1.5 text-[11px] font-semibold leading-[18px] text-white">{dueCount}</span>
               ) : null}
             </NavLink>
           ))}
@@ -115,8 +120,8 @@ export function Shell() {
             to="/settings"
             className={({ isActive }) =>
               cn(
-                'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition',
-                isActive ? 'bg-accent/12 text-accent' : 'text-muted hover:bg-surface2 hover:text-ink',
+                'relative flex items-center gap-3 rounded-[11px] px-3 py-2 text-[14px] font-medium transition',
+                isActive ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(var(--shadow)/0.08),0_0_0_1px_rgb(var(--line)/0.9)] before:absolute before:-left-4 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r-full before:bg-accent' : 'text-muted hover:bg-surface/60 hover:text-ink',
               )
             }
           >
@@ -130,19 +135,20 @@ export function Shell() {
           >
             <Plus className="h-4 w-4" /> Add transaction
           </button>
-          <p className="pt-2 text-center text-[10px] leading-relaxed text-muted/70">
-            {getSyncState() ? 'Saved on this device · end-to-end encrypted sync on' : 'Saved only on this device · sync off'} · v1.0
+          <p className="flex items-center justify-center gap-1.5 pt-2 text-center text-[11px] leading-relaxed text-muted">
+            <span className={cn('h-1.5 w-1.5 rounded-full', getSyncState() ? 'bg-good' : 'bg-muted/50')} />
+            {getSyncState() ? 'Encrypted sync on' : 'Only on this device'}
           </p>
         </div>
       </aside>
 
       <div className="lg:pl-64">
         {/* Mobile header */}
-        <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-line/60 bg-bg/85 px-3 py-2.5 backdrop-blur lg:hidden">
+        <header className="sticky top-0 z-20 flex items-center gap-2 border-b border-line/50 bg-bg/80 px-4 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] backdrop-blur-xl backdrop-saturate-150 lg:hidden">
           <BrandMark size={30} />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold leading-tight text-ink">{title}</p>
-            <p className="text-[10px] leading-tight text-muted">{formatDate(today, 'long')}</p>
+            <p className="truncate text-[17px] font-semibold leading-tight tracking-[-0.015em] text-ink">{title}</p>
+            <p className="text-[11px] leading-tight text-muted">{cycleLine}</p>
           </div>
           <ImportStatus />
           {canInstall ? (
@@ -160,13 +166,11 @@ export function Shell() {
           </NavLink>
         </header>
 
-        <main className="mx-auto w-full max-w-6xl px-3 pb-28 pt-3 sm:px-5 lg:pb-12 lg:pt-8">
-          <div className="mb-4 hidden items-end justify-between gap-4 lg:flex">
+        <main className="mx-auto w-full max-w-6xl px-3 pb-28 pt-3 sm:px-5 lg:px-8 lg:pb-12 lg:pt-9">
+          <div className="mb-6 hidden items-end justify-between gap-4 lg:flex">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-ink">{title}</h1>
-              <p className="mt-0.5 text-xs text-muted">
-                {formatDate(today, 'long')} · pay cycle day {settings.payCycleStartDay}
-              </p>
+              <h1 className="text-[30px] font-semibold leading-none tracking-[-0.03em] text-ink">{title}</h1>
+              <p className="mt-2 text-[13px] text-muted">{cycleLine}</p>
             </div>
             <div className="flex items-center gap-2">
               <ImportStatus />
@@ -188,15 +192,15 @@ export function Shell() {
       <button
         type="button"
         onClick={() => openAdd()}
-        className={cn(moreOpen && 'hidden', 'fixed bottom-[calc(76px+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-2xl bg-accent text-accent-fg shadow-[0_16px_40px_-12px_rgb(var(--accent)/0.9)] transition active:scale-95 lg:hidden')}
+        className={cn(moreOpen && 'hidden', 'fixed bottom-[calc(78px+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-[18px] bg-accent text-accent-fg shadow-[0_12px_32px_-10px_rgb(0_0_0/0.45),0_0_0_1px_rgb(255_255_255/0.06)_inset] transition active:scale-95 lg:hidden')}
         aria-label="Add transaction"
       >
         <Plus className="h-6 w-6" />
       </button>
 
       {/* Mobile bottom nav */}
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line/70 bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-lg lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-5 px-1.5 py-1.5">
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line/60 bg-surface/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl backdrop-saturate-150 lg:hidden">
+        <div className="mx-auto grid max-w-md grid-cols-5 px-1.5 pb-1 pt-1.5">
           {NAV.filter((n) => (MOBILE_PRIMARY as readonly string[]).includes(n.to)).map((item) => (
             <NavLink
               key={item.to}
@@ -205,13 +209,19 @@ export function Shell() {
               onClick={() => setMoreOpen(false)}
               className={({ isActive }) => cn('nav-item relative', isActive && !moreOpen && 'nav-item-active')}
             >
-              <item.icon className="h-[21px] w-[21px]" strokeWidth={2} />
-              <span>{item.label}</span>
-              {item.to === '/bills' && dueCount > 0 ? (
-                <span className="absolute right-[24%] top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-bad px-1 text-[9px] font-bold text-white">
-                  {dueCount}
-                </span>
-              ) : null}
+              {({ isActive }) => (
+                <>
+                  <span className={cn('flex h-7 w-12 items-center justify-center rounded-full transition-colors', isActive && !moreOpen && 'bg-ink/[0.08]')}>
+                    <item.icon className="h-[20px] w-[20px]" strokeWidth={isActive && !moreOpen ? 2.2 : 1.8} />
+                  </span>
+                  <span>{item.label}</span>
+                  {item.to === '/bills' && dueCount > 0 ? (
+                    <span className="absolute right-[22%] top-0 flex h-4 min-w-4 items-center justify-center rounded-full bg-bad px-1 text-[9px] font-semibold text-white ring-2 ring-surface">
+                      {dueCount}
+                    </span>
+                  ) : null}
+                </>
+              )}
             </NavLink>
           ))}
           <button
@@ -221,7 +231,9 @@ export function Shell() {
             aria-expanded={moreOpen}
             aria-label="More"
           >
-            <MoreHorizontal className="h-[21px] w-[21px]" strokeWidth={2} />
+            <span className={cn('flex h-7 w-12 items-center justify-center rounded-full transition-colors', (moreOpen || moreActive) && 'bg-ink/[0.08]')}>
+              <MoreHorizontal className="h-[20px] w-[20px]" strokeWidth={1.8} />
+            </span>
             <span>More</span>
           </button>
         </div>
@@ -229,9 +241,9 @@ export function Shell() {
 
       {moreOpen ? (
         <div className="fixed inset-0 z-[29] lg:hidden" onClick={() => setMoreOpen(false)}>
-          <div className="absolute inset-0 bg-black/40" />
+          <div className="absolute inset-0 animate-fade-in bg-black/40 backdrop-blur-[2px]" />
           <div
-            className="absolute inset-x-2 bottom-[calc(64px+env(safe-area-inset-bottom))] grid grid-cols-3 gap-1.5 rounded-2xl border border-line/70 bg-surface p-2 shadow-card"
+            className="absolute inset-x-2 bottom-[calc(66px+env(safe-area-inset-bottom))] grid animate-sheet-up grid-cols-3 gap-1 rounded-[20px] border border-line/70 bg-surface p-1.5 shadow-pop"
             onClick={(e) => e.stopPropagation()}
           >
             {MOBILE_MORE.map((item) => (
@@ -241,8 +253,8 @@ export function Shell() {
                 onClick={() => setMoreOpen(false)}
                 className={({ isActive }) =>
                   cn(
-                    'flex flex-col items-center gap-1 rounded-xl px-2 py-3 text-[11px] font-medium transition',
-                    isActive ? 'bg-accent/12 text-accent' : 'text-muted hover:bg-surface2 hover:text-ink',
+                    'flex flex-col items-center gap-1.5 rounded-[14px] px-2 py-3 text-[12px] font-medium transition',
+                    isActive ? 'bg-ink/[0.07] text-ink' : 'text-muted hover:bg-surface2 hover:text-ink',
                   )
                 }
               >

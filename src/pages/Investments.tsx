@@ -654,7 +654,7 @@ export default function Investments() {
 function Stat({ icon, label, value, hint }: { icon: React.ReactNode; label: string; value: React.ReactNode; hint?: string }) {
   return (
     <Card className="p-3">
-      <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
         {icon}
         {label}
       </p>

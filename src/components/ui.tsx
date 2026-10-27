@@ -152,16 +152,16 @@ export function Segmented<T extends string>({
   size?: 'sm' | 'md'
 }) {
   return (
-    <div className="no-scrollbar flex gap-1 overflow-x-auto rounded-xl border border-line/70 bg-surface2 p-1">
+    <div className="no-scrollbar flex gap-0.5 overflow-x-auto rounded-[12px] bg-line/45 p-[3px]">
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
           className={cn(
-            'flex-1 whitespace-nowrap rounded-lg font-medium transition',
-            size === 'sm' ? 'px-2.5 py-1.5 text-[11px]' : 'px-3 py-2 text-xs',
-            value === o.value ? 'bg-surface text-ink shadow-sm' : 'text-muted hover:text-ink',
+            'flex-1 whitespace-nowrap rounded-[9px] font-medium transition',
+            size === 'sm' ? 'px-2.5 py-1.5 text-[12px]' : 'px-3 py-2 text-[13px]',
+            value === o.value ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(var(--shadow)/0.12),0_0_0_0.5px_rgb(var(--line))]' : 'text-muted hover:text-ink',
           )}
         >
           {o.label}
@@ -210,8 +210,8 @@ export function SectionTitle({
   return (
     <div className="mb-2.5 flex items-end justify-between gap-3 px-0.5">
       <div>
-        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted">{title}</h2>
-        {sub ? <p className="mt-0.5 text-[11px] text-muted/80">{sub}</p> : null}
+        <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+        {sub ? <p className="mt-0.5 text-[12px] text-muted">{sub}</p> : null}
       </div>
       {action}
     </div>
@@ -254,7 +254,7 @@ export function ProgressBar({
     tone === 'good' ? 'bg-good' : tone === 'warn' ? 'bg-warn' : tone === 'bad' ? 'bg-bad' : 'bg-accent'
   return (
     <div
-      className={cn('w-full overflow-hidden rounded-full bg-surface2', className)}
+      className={cn('w-full overflow-hidden rounded-full bg-line/50', className)}
       style={{ height }}
       role="progressbar"
       aria-valuenow={Math.round(value)}
@@ -262,7 +262,7 @@ export function ProgressBar({
       aria-valuemax={100}
     >
       <div
-        className={cn('h-full rounded-full transition-all duration-500', toneClass)}
+        className={cn('h-full rounded-full transition-[width] duration-700 ease-out', toneClass)}
         style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
       />
     </div>
@@ -280,10 +280,10 @@ export function Badge({
 }) {
   const tones = {
     neutral: 'bg-surface2 text-muted',
-    good: 'bg-good/12 text-good',
-    warn: 'bg-warn/12 text-warn',
-    bad: 'bg-bad/12 text-bad',
-    accent: 'bg-accent/12 text-accent',
+    good: 'bg-good/[0.13] text-good',
+    warn: 'bg-warn/[0.14] text-warn',
+    bad: 'bg-bad/[0.12] text-bad',
+    accent: 'bg-ink/[0.07] text-ink',
   }
   return <span className={cn('badge', tones[tone], className)}>{children}</span>
 }
@@ -328,20 +328,20 @@ export function Modal({
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
-      <div className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-[2px]" onClick={onClose} />
+      <div className="absolute inset-0 animate-fade-in bg-black/50 backdrop-blur-[3px]" onClick={onClose} />
       <div
         role="dialog"
         aria-modal="true"
         aria-label={title}
         className={cn(
-          'relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl border border-line/80 bg-surface shadow-pop sm:rounded-3xl',
+          'relative flex max-h-[92dvh] w-full animate-sheet-up flex-col overflow-hidden rounded-t-[24px] border border-line/80 bg-surface shadow-pop sm:animate-pop-in sm:rounded-[22px]',
           width,
         )}
       >
         <div className="flex items-start justify-between gap-3 border-b border-line/60 px-5 py-4">
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold text-ink">{title}</h3>
-            {subtitle ? <p className="mt-0.5 text-[11px] text-muted">{subtitle}</p> : null}
+            <h3 className="truncate text-[17px] font-semibold tracking-[-0.015em] text-ink">{title}</h3>
+            {subtitle ? <p className="mt-1 text-[12px] leading-relaxed text-muted">{subtitle}</p> : null}
           </div>
           <button
             type="button"
@@ -536,7 +536,7 @@ export function Markdown({ text }: { text: string }) {
 export function StatPill({ label, value, tone }: { label: string; value: string; tone?: 'good' | 'bad' }) {
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-muted">{label}</span>
+      <span className="text-[11px] font-medium text-muted">{label}</span>
       <span className={cn('tnum mt-0.5 text-sm font-semibold', tone === 'good' && 'text-good', tone === 'bad' && 'text-bad')}>
         {value}
       </span>

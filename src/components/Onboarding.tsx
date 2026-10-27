@@ -345,7 +345,7 @@ export function Onboarding() {
 function Summary({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-line/70 bg-surface px-3 py-2">
-      <p className="text-[9px] font-semibold uppercase tracking-wide text-muted/80">{label}</p>
+      <p className="text-[11px] font-medium text-muted/80">{label}</p>
       <p className="mt-0.5 truncate text-xs font-semibold text-ink">{value}</p>
     </div>
   )

@@ -19,6 +19,7 @@ import { TransactionEditor } from '../components/TransactionEditor'
 import { QuickAddBar } from '../components/QuickAddBar'
 import { CategoryDonut, SpendTrendChart } from '../components/charts'
 import { ShareCharts } from '../components/ShareCharts'
+import { CycleHero } from '../components/CycleHero'
 import { Badge, Button, Card, EmptyState, ProgressBar, SectionTitle, cn } from '../components/ui'
 import { addDays, dueLabel, formatDate, shiftPeriod } from '../lib/dates'
 import { changePct, byCategory, dailySeries, totals, txnRange } from '../lib/analytics'
@@ -101,66 +102,7 @@ export function Dashboard() {
       case 'safe':
         return (
           <div className={cn(span.safe, 'flex')} key={id}>
-            <Card className="relative flex w-full flex-col overflow-hidden border-line">
-              <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-accent/20 blur-3xl" />
-              <div className="relative flex flex-1 flex-col">
-                <div className="flex flex-1 items-start justify-between gap-3">
-                  <div>
-                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                      <Wallet className="h-3.5 w-3.5" /> Safe to spend today
-                    </p>
-                    {safe.basis === 'none' ? (
-                      <>
-                        <p className="mt-1.5 text-2xl font-bold tracking-tight text-ink">Set a budget</p>
-                        <p className="mt-1 max-w-xs text-xs leading-relaxed text-muted">
-                          Add budgets or a monthly allowance and this becomes your daily spending limit after bills.
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="tnum mt-1 text-[34px] font-bold leading-none tracking-tight text-ink">
-                          {formatMoney(safe.perDay, currency)}
-                        </p>
-                        <p className="mt-2 text-xs leading-relaxed text-muted">
-                          {formatMoney(Math.max(0, safe.discretionary), currency)} left after{' '}
-                          {formatMoney(safe.billsReserved, currency)} of bills
-                          {safe.potsReserved ? ` and ${formatMoney(safe.potsReserved, currency)} for savings pots` : ''} · {safe.daysLeft} day
-                          {safe.daysLeft === 1 ? '' : 's'} to go
-                        </p>
-                      </>
-                    )}
-                  </div>
-                  <div className="hidden shrink-0 sm:block">
-                    <div className="rounded-xl border border-line/70 bg-surface/70 px-3 py-2 text-right">
-                      <p className="text-[9px] font-semibold uppercase tracking-wide text-muted">Spent this cycle</p>
-                      <p className="tnum text-sm font-bold text-ink">{formatMoney(safe.spent, currency)}</p>
-                      {safe.limit > 0 ? (
-                        <p className="text-[10px] text-muted">of {formatMoney(safe.limit, currency)}</p>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-
-                {safe.basis !== 'none' ? (
-                  <div className="mt-4">
-                    <ProgressBar value={safe.limit ? (safe.spent / safe.limit) * 100 : 0} tone={safe.overBudget ? 'bad' : 'accent'} />
-                    <div className="mt-2 flex items-center justify-between text-[10px] text-muted">
-                      <span>{Math.round(safe.limit ? (safe.spent / safe.limit) * 100 : 0)}% of budget used</span>
-                      <span>{formatMoney(Math.max(0, safe.remainingBudget), currency)} remaining</span>
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => openAdd()}>
-                    <Plus className="h-3.5 w-3.5" /> Add expense
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => openAdd({ type: 'income' })}>
-                    <CircleDollarSign className="h-3.5 w-3.5" /> Add income
-                  </Button>
-                </div>
-              </div>
-            </Card>
+            <CycleHero onAdd={(type) => openAdd(type ? { type } : undefined)} />
           </div>
         )
 
@@ -471,7 +413,6 @@ export function Dashboard() {
           setEditorOpen(true)
           openAdd(seed)
         }}
-        className="lg:mx-auto lg:max-w-2xl"
       />
 
       <div className="grid grid-cols-1 items-stretch gap-3.5 lg:grid-cols-12">

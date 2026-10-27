@@ -138,11 +138,11 @@ export function QuickAddBar({
   return (
     <div
       className={cn(
-        'relative flex items-center gap-2 rounded-2xl border border-line/80 bg-surface px-3 py-2 shadow-card',
+        'relative flex items-center gap-2 rounded-[16px] border border-line/80 bg-surface py-1.5 pl-3.5 pr-1.5 shadow-[0_1px_2px_-1px_rgb(var(--shadow)/0.08)] transition-colors focus-within:border-ink/30',
         className,
       )}
     >
-      <Sparkles className="h-4 w-4 shrink-0 text-accent" />
+      <Sparkles className="h-4 w-4 shrink-0 text-muted" />
       <input
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -150,7 +150,7 @@ export function QuickAddBar({
           if (e.key === 'Enter') void handleParse()
         }}
         placeholder={placeholder}
-        className="min-w-0 flex-1 bg-transparent py-1.5 text-[13px] text-ink outline-none placeholder:text-muted/70"
+        className="min-w-0 flex-1 bg-transparent py-1.5 text-[14px] text-ink outline-none placeholder:text-muted/70"
         enterKeyHint="done"
       />
       <button
