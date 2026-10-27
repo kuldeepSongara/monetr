@@ -325,10 +325,10 @@ export function Bills() {
                       <Button size="sm" variant="ghost" onClick={() => setSnoozing(bill)}>
                         <BellOff className="h-3 w-3" /> Snooze
                       </Button>
-                      <Button size="sm" variant="plain" onClick={() => startEdit(bill)} className="px-1.5 text-muted">
+                      <Button size="sm" variant="plain" onClick={() => startEdit(bill)} className="px-1.5 text-muted" aria-label={`Edit ${bill.name}`}>
                         <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                      <Button size="sm" variant="plain" onClick={() => setDeleting(bill)} className="px-1.5 text-muted">
+                      <Button size="sm" variant="plain" onClick={() => setDeleting(bill)} className="px-1.5 text-muted" aria-label={`Delete ${bill.name}`}>
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                       <button
@@ -640,6 +640,8 @@ function BillEditor({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  // Forget what was loaded once the editor closes, so reopening ("add" again, or the same item) always starts fresh.
+  if (!open && loadedFor !== null) setLoadedFor(null)
 
   // Reset form whenever the modal opens for a different bill.
   const key = open ? (bill?.id ?? 'new') : null

@@ -330,6 +330,9 @@ export function Modal({
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
       <div className="absolute inset-0 animate-fade-in bg-black/60 backdrop-blur-[2px]" onClick={onClose} />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={cn(
           'relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl border border-line/80 bg-surface shadow-pop sm:rounded-3xl',
           width,

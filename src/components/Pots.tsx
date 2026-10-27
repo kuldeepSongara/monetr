@@ -245,6 +245,8 @@ function PotEditor({
   const [error, setError] = useState('')
 
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  // Forget what was loaded once the editor closes, so reopening ("add" again, or the same item) always starts fresh.
+  if (!open && loadedFor !== null) setLoadedFor(null)
   const key = open ? pot?.id ?? `new-${preset?.kind}-${preset?.kind === 'payback' ? preset.txnIds.join() : ''}` : null
   if (key && key !== loadedFor) {
     setLoadedFor(key)

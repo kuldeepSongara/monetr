@@ -323,6 +323,8 @@ function BudgetEditor({
 
   // Reset when a different budget is opened.
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
+  // Forget what was loaded once the editor closes, so reopening ("add" again, or the same item) always starts fresh.
+  if (!open && loadedFor !== null) setLoadedFor(null)
   const key = open ? budget?.id ?? 'new' : null
   if (key && key !== loadedFor) {
     setLoadedFor(key)
