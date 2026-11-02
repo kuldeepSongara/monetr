@@ -26,9 +26,9 @@ export function ShareCharts({ variant = 'soft', className, label = 'Share' }: { 
     const canvas = canvasRef.current ?? document.createElement('canvas')
     canvasRef.current = canvas
     const data = buildShareData(transactions, categories, rangeKey, range, new Set(hidden))
-    drawShareImage(canvas, data, { title: title.trim() || 'My spending', subtitle: rangeLabel(rangeKey, range), currency: settings.currency, mode })
+    drawShareImage(canvas, data, { title: title.trim() || 'My spending', subtitle: rangeLabel(rangeKey, range), currency: settings.currency, mode, categoryShape: settings.chartStyles?.categories === 'donut' ? 'donut' : 'bars' })
     setPreview(canvas.toDataURL('image/png'))
-  }, [open, transactions, categories, rangeKey, range, hidden, title, mode, settings.currency])
+  }, [open, transactions, categories, rangeKey, range, hidden, title, mode, settings.currency, settings.chartStyles?.categories])
 
   async function blob(): Promise<Blob | null> {
     const canvas = canvasRef.current

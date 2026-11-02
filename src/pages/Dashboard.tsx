@@ -5,6 +5,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   CalendarClock,
+  ChevronLeft,
   ChevronRight,
   CircleDollarSign,
   Plus,
@@ -12,19 +13,24 @@ import {
   Target,
   TrendingUp,
   Wallet,
+  BarChart3,
+  BarChartHorizontal,
+  LineChart as LineChartIcon,
+  PieChart as PieChartIcon,
+  Rows3,
 } from 'lucide-react'
 import { useApp } from '../store'
 import type { EditorSeed } from '../components/TransactionEditor'
 import { TransactionEditor } from '../components/TransactionEditor'
 import { QuickAddBar } from '../components/QuickAddBar'
-import { CategoryDonut, SpendTrendChart } from '../components/charts'
+import { CategoryBars, CategoryDonut, CategoryStrip, ChartStylePicker, CumulativeChart, DailyBars, SpendTrendChart } from '../components/charts'
 import { ShareCharts } from '../components/ShareCharts'
 import { CycleHero } from '../components/CycleHero'
 import { Badge, Button, Card, EmptyState, ProgressBar, SectionTitle, cn } from '../components/ui'
-import { addDays, dueLabel, formatDate, shiftPeriod } from '../lib/dates'
-import { changePct, byCategory, dailySeries, totals, txnRange } from '../lib/analytics'
+import { addDays, daysBetween, dueLabel, formatDate, shiftPeriod, type Range } from '../lib/dates'
+import { budgetRows, changePct, byCategory, computeSafeToSpend, dailySeries, totals, txnRange } from '../lib/analytics'
 import { formatMoney } from '../lib/money'
-import type { Bill, WidgetId } from '../types'
+import type { Bill, ChartStyles, WidgetId } from '../types'
 import { expectedAmount, type BillSchedule } from '../lib/bills'
 
 export function Dashboard() {
@@ -32,7 +38,7 @@ export function Dashboard() {
     settings,
     transactions,
     categories,
-    rows,
+    rows: liveRows,
     safe,
     anomalies,
     bills,
@@ -40,16 +46,36 @@ export function Dashboard() {
     schedules,
     today,
     categoryMap,
+    budgets,
+    everyday,
   } = useApp()
   const toVerify = useMemo(() => payments.filter((p) => p.autoRecorded && !p.verified), [payments])
-  const { duplicates } = useApp()
+  const { duplicates, saveSettings } = useApp()
+  // Chart shapes are a preference that follows you to your other devices.
+  const catStyle = settings.chartStyles?.categories ?? 'bars'
+  const trendStyle = settings.chartStyles?.trend ?? 'line'
+  const setChartStyle = (patch: ChartStyles) => void saveSettings({ chartStyles: { ...settings.chartStyles, ...patch } })
   const owedCount = useMemo(() => payments.filter((p) => p.splitAmount && !p.splitCollectedAt).length, [payments])
   const { openAdd } = useOutletContext<{ openAdd: (seed?: EditorSeed) => void }>()
   const [editId, setEditId] = useState<string | undefined>()
   const [editorOpen, setEditorOpen] = useState(false)
 
   const currency = settings.currency
-  const range = safe.range
+  // 0 = this pay cycle, -1 = the one before, and so on. Lets you look back once a month is over.
+  const [offset, setOffset] = useState(0)
+  const isPast = offset < 0
+  const range = useMemo(() => (offset ? shiftPeriod(safe.range, offset, false) : safe.range), [safe.range, offset])
+  const rangeLabel = cycleLabel(range)
+  // Budgets as they stood at the end of the cycle you're looking at.
+  const rows = useMemo(
+    () => (isPast ? budgetRows(budgets, everyday, categories, settings, range.end) : liveRows),
+    [isPast, budgets, everyday, categories, settings, range.end, liveRows],
+  )
+  const pastCycle = useMemo(() => {
+    if (!isPast) return undefined
+    const s = computeSafeToSpend(rows, everyday, [], new Map(), settings, range.end)
+    return { range, label: rangeLabel, spent: s.spent, limit: s.limit }
+  }, [isPast, rows, everyday, settings, range, rangeLabel])
   const prevRange = useMemo(() => shiftPeriod(range, -1, false), [range])
   const current = useMemo(() => txnRange(transactions, range), [transactions, range])
   const previous = useMemo(() => txnRange(transactions, prevRange), [transactions, prevRange])
@@ -58,8 +84,8 @@ export function Dashboard() {
   const spendChange = changePct(nowTotals.expense, prevTotals.expense)
   const cats = useMemo(() => byCategory(current, categories), [current, categories])
   const last30 = useMemo(
-    () => dailySeries(transactions, { start: addDays(today, -29), end: today }),
-    [transactions, today],
+    () => dailySeries(transactions, isPast ? range : { start: addDays(today, -29), end: today }),
+    [transactions, today, isPast, range],
   )
 
   const dueBills = useMemo(
@@ -75,10 +101,10 @@ export function Dashboard() {
 
   const recent = useMemo(
     () =>
-      [...transactions]
+      [...(isPast ? current : transactions)]
         .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
         .slice(0, 6),
-    [transactions],
+    [transactions, current, isPast],
   )
 
   const alertBills = dueBills.filter((x) => x.schedule!.status === 'overdue' || x.schedule!.status === 'due-soon')
@@ -98,11 +124,20 @@ export function Dashboard() {
   }
 
   function renderWidget(id: WidgetId) {
+    // Alerts and upcoming bills are about today, so they stay out of past cycles.
+    if (isPast && (id === 'alerts' || id === 'bills')) return null
     switch (id) {
       case 'safe':
         return (
           <div className={cn(span.safe, 'flex')} key={id}>
-            <CycleHero onAdd={(type) => openAdd(type ? { type } : undefined)} />
+            <CycleHero
+              past={pastCycle}
+              onAdd={(type) => {
+                // Adding from a past cycle dates the entry inside that cycle (its last day; change it in the form).
+                const seed: EditorSeed = { ...(type ? { type } : {}), ...(isPast ? { date: range.end } : {}) }
+                openAdd(Object.keys(seed).length ? seed : undefined)
+              }}
+            />
           </div>
         )
 
@@ -181,27 +216,56 @@ export function Dashboard() {
             <Card className="flex w-full flex-col">
               <div className="mb-3 flex items-start justify-between gap-2">
                 <div>
-                  <p className="text-[13px] font-semibold text-ink">Spending trend</p>
-                  <p className="text-[10px] text-muted">Last 30 days · daily spend vs 7-day average</p>
+                  <p className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Spending trend</p>
+                  <p className="text-[12px] text-muted">
+                    {isPast ? rangeLabel : 'Last 30 days'} ·{' '}
+                    {trendStyle === 'bars' ? 'each day against your daily average' : trendStyle === 'cumulative' ? 'running total' : 'daily spend and 7-day average'}
+                  </p>
                 </div>
-                <div className="text-right">
-                  <p className="tnum text-sm font-bold text-ink">{formatMoney(last30.reduce((s, d) => s + d.expense, 0), currency)}</p>
-                  {spendChange !== null ? (
-                    <p className={cn('flex items-center justify-end gap-0.5 text-[10px] font-semibold', spendChange > 0 ? 'text-bad' : 'text-good')}>
-                      {spendChange > 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
-                      {Math.abs(Math.round(spendChange))}% vs last cycle
-                    </p>
-                  ) : null}
+                <div className="flex shrink-0 flex-col items-end gap-1.5">
+                  <ChartStylePicker
+                    value={trendStyle}
+                    onChange={(v) => setChartStyle({ trend: v })}
+                    options={[
+                      { value: 'line', label: 'Line with average', icon: LineChartIcon },
+                      { value: 'bars', label: 'Daily bars', icon: BarChart3 },
+                      { value: 'cumulative', label: 'Running total', icon: TrendingUp },
+                    ]}
+                  />
                 </div>
               </div>
-              <SpendTrendChart data={last30} />
-              <div className="mt-2 flex gap-4 text-[10px] text-muted">
-                <span className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-3 rounded-full bg-accent" /> Daily
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="h-1.5 w-3 rounded-full bg-warn" /> 7-day avg
-                </span>
+              <div className="mb-2 flex items-baseline justify-between gap-2">
+                <p className="tnum text-[17px] font-semibold text-ink">{formatMoney(last30.reduce((s, d) => s + d.expense, 0), currency)}</p>
+                {spendChange !== null ? (
+                  <p className={cn('flex items-center gap-0.5 text-[11px] font-medium', spendChange > 0 ? 'text-bad' : 'text-good')}>
+                    {spendChange > 0 ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                    {Math.abs(Math.round(spendChange))}% vs {isPast ? 'the cycle before' : 'last cycle'}
+                  </p>
+                ) : null}
+              </div>
+              {trendStyle === 'bars' ? <DailyBars data={last30} /> : trendStyle === 'cumulative' ? <CumulativeChart data={last30} height={190} /> : <SpendTrendChart data={last30} />}
+              <div className="mt-2 flex gap-4 text-[11px] text-muted">
+                {trendStyle === 'line' ? (
+                  <>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-1.5 w-3 rounded-full bg-accent" /> Daily
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-0 w-3 border-t-2 border-dashed border-warn" /> 7-day average
+                    </span>
+                  </>
+                ) : trendStyle === 'bars' ? (
+                  <>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-0 w-3 border-t-2 border-dashed border-warn" /> Daily average
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-2 w-2 rounded-[2px] bg-warn" /> More than twice the average
+                    </span>
+                  </>
+                ) : (
+                  <span>Everything spent {isPast ? 'in the cycle' : 'in the 30 days'}, added up day by day</span>
+                )}
               </div>
             </Card>
           </div>
@@ -212,14 +276,33 @@ export function Dashboard() {
           <div className={cn(span.categories, 'flex')} key={id}>
             <Card className="flex w-full flex-col">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-[13px] font-semibold text-ink">Where it went</p>
+                <div>
+                  <p className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Where it went</p>
+                  <p className="text-[12px] text-muted">
+                    {formatDate(range.start, 'short')} – {formatDate(range.end, 'short')}
+                  </p>
+                </div>
                 <div className="flex items-center gap-1.5">
-                  <Badge tone="neutral">{formatDate(range.start, 'short')}–{formatDate(range.end, 'short')}</Badge>
+                  <ChartStylePicker
+                    value={catStyle}
+                    onChange={(v) => setChartStyle({ categories: v })}
+                    options={[
+                      { value: 'bars', label: 'Ranked bars', icon: BarChartHorizontal },
+                      { value: 'strip', label: 'Share strip', icon: Rows3 },
+                      { value: 'donut', label: 'Donut', icon: PieChartIcon },
+                    ]}
+                  />
                   <ShareCharts variant="ghost" label="" className="!h-7 !px-2" />
                 </div>
               </div>
               {cats.length ? (
-                <CategoryDonut data={cats} total={nowTotals.expense} />
+                catStyle === 'donut' ? (
+                  <CategoryDonut data={cats} total={nowTotals.expense} />
+                ) : catStyle === 'strip' ? (
+                  <CategoryStrip data={cats} total={nowTotals.expense} />
+                ) : (
+                  <CategoryBars data={cats} total={nowTotals.expense} />
+                )
               ) : (
                 <EmptyState
                   icon={<Sparkles className="h-6 w-6" />}
@@ -341,7 +424,7 @@ export function Dashboard() {
           <div className={cn(span.recent, 'flex')} key={id}>
             <Card className="flex w-full flex-col">
               <SectionTitle
-                title="Recent activity"
+                title={isPast ? `Latest in ${rangeLabel}` : 'Recent activity'}
                 action={
                   <Link to="/transactions" className="flex items-center gap-0.5 text-[11px] font-semibold text-ink">
                     See all <ChevronRight className="h-3 w-3" />
@@ -415,6 +498,20 @@ export function Dashboard() {
         }}
       />
 
+      <CycleSwitcher
+        label={offset === 0 ? 'This cycle' : rangeLabel}
+        range={range}
+        isPast={isPast}
+        onPrev={() => setOffset((o) => o - 1)}
+        onNext={() => setOffset((o) => Math.min(0, o + 1))}
+        onNow={() => setOffset(0)}
+        nudge={
+          offset === 0 && daysBetween(safe.range.start, today) < 5 && previous.some((t) => t.type === 'expense')
+            ? cycleLabel(shiftPeriod(safe.range, -1, false))
+            : null
+        }
+      />
+
       <div className="grid grid-cols-1 items-stretch gap-3.5 lg:grid-cols-12">
         {widgets.map((id) => renderWidget(id))}
       </div>
@@ -431,4 +528,63 @@ export function Dashboard() {
 function billAmountText(bill: Bill, schedule: BillSchedule, currency: string): string {
   const e = expectedAmount(bill, schedule)
   return e ? `${e.approx ? '~' : ''}${formatMoney(e.amount, currency)}` : 'amount varies'
+}
+
+/** "October 2026" for a calendar-month cycle, otherwise "15 Oct – 14 Nov". */
+function cycleLabel(r: Range): string {
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+  if (r.start.endsWith('-01') && addDays(r.end, 1).endsWith('-01')) return `${MONTHS[Number(r.start.slice(5, 7)) - 1]} ${r.start.slice(0, 4)}`
+  return `${formatDate(r.start, 'short')} – ${formatDate(r.end, 'short')}`
+}
+
+function CycleSwitcher({
+  label,
+  range,
+  isPast,
+  onPrev,
+  onNext,
+  onNow,
+  nudge,
+}: {
+  label: string
+  range: Range
+  isPast: boolean
+  onPrev: () => void
+  onNext: () => void
+  onNow: () => void
+  nudge: string | null
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center rounded-[12px] border border-line/80 bg-surface p-[3px]">
+        <button type="button" onClick={onPrev} className="btn btn-icon h-8 w-8 rounded-[9px] text-muted hover:bg-surface2 hover:text-ink" aria-label="Previous cycle">
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <div className="min-w-[9.5rem] px-2 text-center">
+          <p className="text-[13px] font-semibold leading-tight text-ink">{label}</p>
+          <p className="text-[11px] leading-tight text-muted">
+            {formatDate(range.start, 'short')} – {formatDate(range.end, 'short')}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={!isPast}
+          className="btn btn-icon h-8 w-8 rounded-[9px] text-muted hover:bg-surface2 hover:text-ink"
+          aria-label="Next cycle"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+      {isPast ? (
+        <button type="button" onClick={onNow} className="btn btn-sm btn-ghost">
+          Back to this cycle
+        </button>
+      ) : nudge ? (
+        <button type="button" onClick={onPrev} className="text-[12px] font-medium text-muted underline underline-offset-2 hover:text-ink">
+          Wrapping up {nudge}? See how it went
+        </button>
+      ) : null}
+    </div>
+  )
 }

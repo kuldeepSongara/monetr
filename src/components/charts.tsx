@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, type ComponentType } from 'react'
 import {
   Area,
   Bar,
@@ -8,6 +8,7 @@ import {
   Line,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -219,6 +220,101 @@ export function CategoryDonut({
         ))}
         {!top.length ? <p className="text-xs text-muted">No spending in this period.</p> : null}
       </div>
+    </div>
+  )
+}
+
+/* ------------------------- category: other shapes -------------------------- */
+
+/** Ranked bars: each category's amount and share, biggest first. Easiest to compare at a glance. */
+export function CategoryBars({ data, total }: { data: CategoryTotal[]; total: number }) {
+  const currency = useApp().settings.currency
+  const top = data.slice(0, 7)
+  const rest = data.slice(7)
+  const rows = rest.length
+    ? [...top, { categoryId: 'rest', name: `${rest.length} more`, emoji: '…', color: 'rgb(var(--muted))', total: rest.reduce((s, c) => s + c.total, 0), count: 0, share: rest.reduce((s, c) => s + c.share, 0) }]
+    : top
+  const max = Math.max(1, ...rows.map((c) => c.total))
+  return (
+    <div className="space-y-2.5">
+      <div className="flex items-baseline justify-between">
+        <span className="text-[12px] text-muted">Spent</span>
+        <span className="tnum text-[15px] font-semibold text-ink">{formatMoney(total, currency)}</span>
+      </div>
+      {rows.map((c) => (
+        <div key={c.categoryId}>
+          <div className="flex items-baseline justify-between gap-2 text-[12px]">
+            <span className="truncate text-ink/90">
+              {c.emoji} {c.name}
+            </span>
+            <span className="tnum shrink-0">
+              <span className="font-medium text-ink">{formatMoney(c.total, currency)}</span>
+              <span className="ml-1.5 inline-block w-8 text-right text-muted">{Math.round(c.share)}%</span>
+            </span>
+          </div>
+          <div className="mt-1 h-[7px] overflow-hidden rounded-full bg-line/45">
+            <div className="h-full rounded-full" style={{ width: `${Math.max(1.5, (c.total / max) * 100)}%`, background: c.color }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** One bar split into shares, with the amounts listed under it. */
+export function CategoryStrip({ data, total }: { data: CategoryTotal[]; total: number }) {
+  const currency = useApp().settings.currency
+  const positive = data.filter((c) => c.total > 0)
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <span className="text-[12px] text-muted">Spent</span>
+        <span className="tnum text-[15px] font-semibold text-ink">{formatMoney(total, currency)}</span>
+      </div>
+      <div className="mt-2 flex h-9 overflow-hidden rounded-[10px]">
+        {positive.map((c) => (
+          <div
+            key={c.categoryId}
+            title={`${c.name}: ${formatMoney(c.total, currency)} (${Math.round(c.share)}%)`}
+            className="h-full border-r-2 border-surface last:border-r-0"
+            style={{ width: `${c.share}%`, background: c.color }}
+          />
+        ))}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5">
+        {positive.slice(0, 10).map((c) => (
+          <div key={c.categoryId} className="flex items-center gap-2 text-[12px]">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: c.color }} />
+            <span className="truncate text-ink/85">{c.name}</span>
+            <span className="tnum ml-auto shrink-0 text-muted">{Math.round(c.share)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/* ---------------------------- trend: daily bars ---------------------------- */
+
+/** One bar per day; days well above your average stand out. */
+export function DailyBars({ data, height = 190 }: { data: DayPoint[]; height?: number }) {
+  const avg = data.reduce((s, d) => s + d.expense, 0) / Math.max(1, data.length)
+  return (
+    <div style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
+          <XAxis dataKey="date" tick={AXIS} tickLine={false} axisLine={false} interval="preserveStartEnd" minTickGap={18} tickFormatter={(v: string) => String(Number(v.slice(8, 10)))} />
+          <YAxis hide />
+          <Tooltip content={<ChartTooltip />} cursor={{ fill: 'rgb(var(--surface-2))' }} />
+          <ReferenceLine y={avg} stroke="rgb(var(--warn))" strokeDasharray="4 3" ifOverflow="extendDomain" />
+          <Bar dataKey="expense" name="Spent" radius={[3, 3, 0, 0]} maxBarSize={14}>
+            {data.map((d) => (
+              <Cell key={d.date} fill={d.expense > avg * 2 ? 'rgb(var(--warn))' : 'rgb(var(--accent))'} />
+            ))}
+          </Bar>
+        </ComposedChart>
+      </ResponsiveContainer>
     </div>
   )
 }
@@ -438,6 +534,41 @@ export function ComparisonChart({ data, labelA, labelB, height = 190 }: { data: 
           <Line type="monotone" dataKey="a" name={labelA} stroke="rgb(var(--accent))" strokeWidth={2.2} dot={false} activeDot={{ r: 3 }} />
         </ComposedChart>
       </ResponsiveContainer>
+    </div>
+  )
+}
+
+/* ------------------------------ style picker ------------------------------- */
+
+/** Small icon switch in a widget's header to pick how its chart is drawn. */
+export function ChartStylePicker<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: { value: T; label: string; icon: ComponentType<{ className?: string }> }[]
+}) {
+  return (
+    <div role="radiogroup" aria-label="Chart style" className="flex rounded-[9px] bg-line/45 p-[2px]">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          aria-label={o.label}
+          title={o.label}
+          onClick={() => onChange(o.value)}
+          className={cn(
+            'flex h-6 w-7 items-center justify-center rounded-[7px] transition',
+            value === o.value ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(var(--shadow)/0.12)]' : 'text-muted hover:text-ink',
+          )}
+        >
+          <o.icon className="h-3.5 w-3.5" />
+        </button>
+      ))}
     </div>
   )
 }

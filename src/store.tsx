@@ -80,6 +80,8 @@ interface StoreValue extends AppState {
   safe: SafeToSpend
   /** Savings pots with their progress; purchases paid from them skip the cycle budget. */
   potList: PotStatus[]
+  /** Transactions minus purchases paid from savings pots — what budgets count. */
+  everyday: Txn[]
   anomalies: ReturnType<typeof detectAnomalies>
   subscriptions: ReturnType<typeof detectSubscriptions>
   /** Possible double entries / double charges, for you to review. Never acted on automatically. */
@@ -482,6 +484,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     rows,
     safe,
     potList,
+    everyday,
     anomalies,
     subscriptions,
     duplicates,

@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { CircleDollarSign, Plus } from 'lucide-react'
 import { useApp } from '../store'
 import { spendDelta } from '../lib/analytics'
-import { addDays, daysBetween, formatDate } from '../lib/dates'
+import { addDays, daysBetween, formatDate, type Range } from '../lib/dates'
 import { formatMoney } from '../lib/money'
 import { cn } from './ui'
 
@@ -31,10 +31,20 @@ export function MoneyFigure({ minor, currency, className }: { minor: number; cur
   )
 }
 
-export function CycleHero({ onAdd }: { onAdd: (type?: 'income') => void }) {
-  const { safe, transactions, bills, schedules, settings, today, potList } = useApp()
+/** A finished pay cycle: what was spent against what was budgeted. */
+export interface PastCycle {
+  range: Range
+  label: string
+  spent: number
+  limit: number
+}
+
+export function CycleHero({ onAdd, past }: { onAdd: (type?: 'income') => void; past?: PastCycle }) {
+  const { safe, transactions, bills, schedules, settings, today: realToday, potList } = useApp()
   const currency = settings.currency
-  const range = safe.range
+  const range = past?.range ?? safe.range
+  // For a finished cycle every day is in the past; nothing is "today" and no bill is upcoming.
+  const today = past ? range.end : realToday
 
   const days = useMemo(() => {
     const len = daysBetween(range.start, range.end) + 1
@@ -46,15 +56,17 @@ export function CycleHero({ onAdd }: { onAdd: (type?: 'income') => void }) {
       spent[i] += spendDelta(t)
     }
     const dueDays = new Set<number>()
-    for (const b of bills) {
+    for (const b of past ? [] : bills) {
       const due = schedules.get(b.id)?.nextDue
       if (b.active && !b.archived && due && due >= range.start && due <= range.end) dueDays.add(daysBetween(range.start, due))
     }
     const todayIdx = daysBetween(range.start, today)
     const max = Math.max(1, ...spent.slice(0, todayIdx + 1))
     // Square root keeps one big day (rent) from flattening every other day.
-    return spent.map((v, i) => ({ i, date: addDays(range.start, i), spent: Math.max(0, v), h: Math.sqrt(Math.max(0, v) / max), past: i <= todayIdx, today: i === todayIdx, bill: dueDays.has(i) }))
-  }, [transactions, bills, schedules, range, today, potList])
+    return spent.map((v, i) => ({ i, date: addDays(range.start, i), spent: Math.max(0, v), h: Math.sqrt(Math.max(0, v) / max), past: i <= todayIdx, today: !past && i === todayIdx, bill: dueDays.has(i) }))
+  }, [transactions, bills, schedules, range, today, potList, past])
+
+  if (past) return <PastHero past={past} days={days} onAdd={onAdd} currency={currency} />
 
   const used = safe.limit ? Math.min(100, (safe.spent / safe.limit) * 100) : 0
   const none = safe.basis === 'none'
@@ -149,6 +161,73 @@ export function CycleHero({ onAdd }: { onAdd: (type?: 'income') => void }) {
       <div className="mt-5 flex flex-wrap gap-2">
         <button type="button" onClick={() => onAdd()} className="btn btn-sm bg-white text-[#14161A] hover:bg-white/90">
           <Plus className="h-3.5 w-3.5" /> Add expense
+        </button>
+        <button type="button" onClick={() => onAdd('income')} className="btn btn-sm border border-white/15 bg-white/[0.06] text-white hover:bg-white/10">
+          <CircleDollarSign className="h-3.5 w-3.5" /> Add income
+        </button>
+      </div>
+    </section>
+  )
+}
+
+type Day = { i: number; date: string; spent: number; h: number; past: boolean; today: boolean; bill: boolean }
+
+const SLIP = {
+  background: 'radial-gradient(120% 90% at 100% 0%, #2A2F36 0%, #181B1F 45%, #111316 100%)',
+  boxShadow: '0 1px 0 0 rgb(255 255 255 / 0.07) inset, 0 20px 40px -24px rgb(0 0 0 / 0.55)',
+}
+
+function PastHero({ past, days, onAdd, currency }: { past: PastCycle; days: Day[]; onAdd: (type?: 'income') => void; currency: string }) {
+  const over = past.limit > 0 && past.spent > past.limit
+  const used = past.limit ? Math.min(100, (past.spent / past.limit) * 100) : 0
+  const busiest = days.reduce((a, d) => (d.spent > a.spent ? d : a), days[0])
+  return (
+    <section aria-label={`How ${past.label} went`} className="relative w-full overflow-hidden rounded-[24px] p-5 text-[#ECEDEF] sm:p-6" style={SLIP}>
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[13px] font-medium text-white/60">How {past.label} went</p>
+        <p className="text-right text-[12px] text-white/45">
+          {formatDate(past.range.start, 'short')} – {formatDate(past.range.end, 'short')}
+        </p>
+      </div>
+      <MoneyFigure minor={past.spent} currency={currency} className="mt-3 block text-[56px] sm:text-[68px]" />
+      <p className="mt-3 max-w-xl text-[13px] leading-relaxed text-white/60">
+        {past.limit
+          ? over
+            ? `That's ${formatMoney(past.spent - past.limit, currency)} over the ${formatMoney(past.limit, currency)} budget.`
+            : `That's ${formatMoney(past.limit - past.spent, currency)} under the ${formatMoney(past.limit, currency)} budget.`
+          : 'No budget was set for this cycle.'}
+        {busiest && busiest.spent > 0 ? ` Biggest day: ${formatDate(busiest.date, 'short')} (${formatMoney(busiest.spent, currency)}).` : ''}
+      </p>
+
+      <div className="mt-6" aria-hidden>
+        <div className="flex h-14 items-end gap-[3px]">
+          {days.map((d) => (
+            <div key={d.i} className="relative flex h-full flex-1 flex-col items-center justify-end">
+              <span
+                className={cn('w-full max-w-[10px] origin-bottom animate-tick rounded-[3px]', d.spent ? 'bg-white/55' : 'bg-white/12')}
+                style={{ height: `${Math.max(8, d.h * 100)}%`, animationDelay: `${Math.min(d.i, 40) * 14}ms` }}
+                title={`${formatDate(d.date, 'short')}: ${formatMoney(d.spent, currency)}`}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center justify-between text-[11px] text-white/45">
+          <span>{formatDate(past.range.start, 'short')}</span>
+          <span>{formatDate(past.range.end, 'short')}</span>
+        </div>
+      </div>
+
+      {past.limit ? (
+        <div className="mt-5 border-t border-white/10 pt-4">
+          <div className="h-[5px] overflow-hidden rounded-full bg-white/10">
+            <div className={cn('h-full rounded-full', over ? 'bg-[#F06A5E]' : 'bg-white')} style={{ width: `${used}%` }} />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="mt-5 flex flex-wrap gap-2">
+        <button type="button" onClick={() => onAdd()} className="btn btn-sm bg-white text-[#14161A] hover:bg-white/90">
+          <Plus className="h-3.5 w-3.5" /> Add expense to {past.label}
         </button>
         <button type="button" onClick={() => onAdd('income')} className="btn btn-sm border border-white/15 bg-white/[0.06] text-white hover:bg-white/10">
           <CircleDollarSign className="h-3.5 w-3.5" /> Add income

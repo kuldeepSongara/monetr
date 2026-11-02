@@ -60,7 +60,7 @@ const SECTIONS: FeatureSection[] = [
       { icon: Wallet, title: 'Safe to spend', description: 'A daily number for the rest of your pay cycle, after budgets and the bills still due.' },
       { icon: Bell, title: 'Alerts', description: 'Bills due or overdue, autopay amounts to confirm, spending spikes, duplicate-looking and unusually large charges.' },
       { icon: LineChart, title: 'Charts', description: '30-day trend vs 7-day average, category breakdown, budgets, upcoming bills and recent activity.' },
-      { icon: SettingsIcon, title: 'Your layout', description: 'Show, hide and reorder dashboard widgets in Settings → Appearance.' },
+      { icon: SettingsIcon, title: 'Your layout', description: 'Show, hide and reorder dashboard widgets in Settings → Appearance. Pick how each chart is drawn — ranked bars, a share strip or a donut for categories; a line, daily bars or a running total for the trend — from the small switch in its corner.' },
     ],
   },
   {

@@ -16,6 +16,14 @@ export type ProviderId =
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
+/** How a dashboard chart is drawn — pick whatever reads best for you. */
+export type CategoryChartStyle = 'bars' | 'donut' | 'strip'
+export type TrendChartStyle = 'line' | 'bars' | 'cumulative'
+export interface ChartStyles {
+  categories?: CategoryChartStyle
+  trend?: TrendChartStyle
+}
+
 export type WidgetId = 'safe' | 'alerts' | 'trend' | 'categories' | 'budgets' | 'bills' | 'recent'
 
 /** Seconds the app may stay hidden before it locks. 0 = lock the moment it is hidden. */
@@ -53,6 +61,7 @@ export interface Settings {
   failoverEnabled: boolean
   autoSwitchActive: boolean
   dashboardWidgets: WidgetId[]
+  chartStyles?: ChartStyles
   schemaVersion: number
   /** When a recovery kit was last created (on any linked device). */
   recoveryKitAt?: string
@@ -76,6 +85,7 @@ export const SHARED_SETTING_KEYS = [
   'theme',
   'accent',
   'dashboardWidgets',
+  'chartStyles',
   'lockEnabled',
   'pinHash',
   'pinSalt',

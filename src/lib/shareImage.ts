@@ -113,6 +113,8 @@ export interface DrawOptions {
   currency: string
   /** 'percent' hides every amount — only shares and shapes. */
   mode: 'amount' | 'percent'
+  /** 'bars' draws ranked bars instead of the donut (easier to read for many people). */
+  categoryShape?: 'bars' | 'donut'
 }
 
 const W = 1080
@@ -205,66 +207,96 @@ export function drawShareImage(canvas: HTMLCanvasElement, data: ShareData, opts:
   const top = 470
   ctx.fillStyle = C.muted
   ctx.font = `700 24px ${FONT}`
-  ctx.fillText('BY CATEGORY', L, top)
-  const cx = L + 170
-  const cy = top + 230
-  const rOut = 170
-  const rIn = 105
-  if (data.categories.length) {
-    let a = -Math.PI / 2
+  ctx.fillText('By category', L, top)
+  if (opts.categoryShape === 'bars') {
+    // Ranked bars: name and figure on one line, the bar underneath.
+    const rowH = 62
+    const maxPct = Math.max(1, ...data.categories.map((c) => c.pct))
+    let y = top + 56
     for (const c of data.categories) {
-      const sweep = (c.pct / 100) * Math.PI * 2
-      ctx.beginPath()
-      ctx.arc(cx, cy, rOut, a, a + sweep)
-      ctx.arc(cx, cy, rIn, a + sweep, a, true)
-      ctx.closePath()
+      const right = opts.mode === 'amount' ? `${money(c.total)}   ${Math.round(c.pct)}%` : `${Math.round(c.pct)}%`
+      ctx.font = `600 28px ${FONT}`
+      const rw = ctx.measureText(right).width
+      ctx.fillStyle = C.ink
+      ctx.textAlign = 'right'
+      ctx.fillText(right, R, y)
+      ctx.textAlign = 'left'
+      ctx.font = `500 28px ${FONT}`
+      ctx.fillText(fit(ctx, `${c.emoji} ${c.name}`, R - L - rw - 30), L, y)
+      roundRect(ctx, L, y + 12, R - L, 12, 6)
+      ctx.fillStyle = C.line
+      ctx.fill()
+      roundRect(ctx, L, y + 12, Math.max(12, ((R - L) * c.pct) / maxPct), 12, 6)
       ctx.fillStyle = c.color
       ctx.fill()
-      // thin separator
-      ctx.strokeStyle = C.card
-      ctx.lineWidth = 4
-      ctx.stroke()
-      a += sweep
+      y += rowH
+    }
+    if (!data.categories.length) {
+      ctx.fillStyle = C.muted
+      ctx.font = `500 28px ${FONT}`
+      ctx.fillText('No spending in this period', L, top + 80)
     }
   } else {
-    ctx.beginPath()
-    ctx.arc(cx, cy, rOut, 0, Math.PI * 2)
-    ctx.arc(cx, cy, rIn, Math.PI * 2, 0, true)
-    ctx.fillStyle = C.line
-    ctx.fill()
-  }
-  ctx.textAlign = 'center'
-  ctx.fillStyle = C.ink
-  ctx.font = `700 34px ${FONT}`
-  ctx.fillText(String(data.categories.reduce((n, c) => n + (c.id === 'rest' ? Number(c.name.split(' ')[0]) : 1), 0)), cx, cy + 4)
-  ctx.fillStyle = C.muted
-  ctx.font = `500 22px ${FONT}`
-  ctx.fillText('categories', cx, cy + 34)
-  ctx.textAlign = 'left'
-
-  const lx = cx + rOut + 70
-  const rowH = 58
-  let ly = top + 230 - ((data.categories.length - 1) * rowH) / 2
-  for (const c of data.categories) {
-    ctx.beginPath()
-    ctx.arc(lx + 9, ly - 9, 9, 0, Math.PI * 2)
-    ctx.fillStyle = c.color
-    ctx.fill()
-    const right = opts.mode === 'amount' ? `${Math.round(c.pct)}%  ·  ${money(c.total)}` : `${Math.round(c.pct)}%`
-    ctx.font = `600 28px ${FONT}`
-    const rw = ctx.measureText(right).width
+    const cx = L + 170
+    const cy = top + 230
+    const rOut = 170
+    const rIn = 105
+    if (data.categories.length) {
+      let a = -Math.PI / 2
+      for (const c of data.categories) {
+        const sweep = (c.pct / 100) * Math.PI * 2
+        ctx.beginPath()
+        ctx.arc(cx, cy, rOut, a, a + sweep)
+        ctx.arc(cx, cy, rIn, a + sweep, a, true)
+        ctx.closePath()
+        ctx.fillStyle = c.color
+        ctx.fill()
+        // thin separator
+        ctx.strokeStyle = C.card
+        ctx.lineWidth = 4
+        ctx.stroke()
+        a += sweep
+      }
+    } else {
+      ctx.beginPath()
+      ctx.arc(cx, cy, rOut, 0, Math.PI * 2)
+      ctx.arc(cx, cy, rIn, Math.PI * 2, 0, true)
+      ctx.fillStyle = C.line
+      ctx.fill()
+    }
+    ctx.textAlign = 'center'
     ctx.fillStyle = C.ink
-    ctx.textAlign = 'right'
-    ctx.fillText(right, R, ly)
-    ctx.textAlign = 'left'
-    ctx.font = `500 28px ${FONT}`
-    ctx.fillText(fit(ctx, `${c.emoji} ${c.name}`, R - rw - 30 - (lx + 30)), lx + 30, ly)
-    ly += rowH
-  }
-  if (!data.categories.length) {
+    ctx.font = `700 34px ${FONT}`
+    ctx.fillText(String(data.categories.reduce((n, c) => n + (c.id === 'rest' ? Number(c.name.split(' ')[0]) : 1), 0)), cx, cy + 4)
     ctx.fillStyle = C.muted
-    ctx.font = `500 28px ${FONT}`
-    ctx.fillText('No spending in this period', lx, cy)
+    ctx.font = `500 22px ${FONT}`
+    ctx.fillText('categories', cx, cy + 34)
+    ctx.textAlign = 'left'
+
+    const lx = cx + rOut + 70
+    const rowH = 58
+    let ly = top + 230 - ((data.categories.length - 1) * rowH) / 2
+    for (const c of data.categories) {
+      ctx.beginPath()
+      ctx.arc(lx + 9, ly - 9, 9, 0, Math.PI * 2)
+      ctx.fillStyle = c.color
+      ctx.fill()
+      const right = opts.mode === 'amount' ? `${Math.round(c.pct)}%  ·  ${money(c.total)}` : `${Math.round(c.pct)}%`
+      ctx.font = `600 28px ${FONT}`
+      const rw = ctx.measureText(right).width
+      ctx.fillStyle = C.ink
+      ctx.textAlign = 'right'
+      ctx.fillText(right, R, ly)
+      ctx.textAlign = 'left'
+      ctx.font = `500 28px ${FONT}`
+      ctx.fillText(fit(ctx, `${c.emoji} ${c.name}`, R - rw - 30 - (lx + 30)), lx + 30, ly)
+      ly += rowH
+    }
+    if (!data.categories.length) {
+      ctx.fillStyle = C.muted
+      ctx.font = `500 28px ${FONT}`
+      ctx.fillText('No spending in this period', lx, cy)
+    }
   }
 
   // Spending over time
@@ -272,7 +304,7 @@ export function drawShareImage(canvas: HTMLCanvasElement, data: ShareData, opts:
   const chartBottom = 1185
   ctx.fillStyle = C.muted
   ctx.font = `700 24px ${FONT}`
-  ctx.fillText(data.seriesUnit === 'day' ? 'EACH DAY' : data.seriesUnit === 'week' ? 'EACH WEEK' : 'EACH MONTH', L, chartTop - 34)
+  ctx.fillText(data.seriesUnit === 'day' ? 'Each day' : data.seriesUnit === 'week' ? 'Each week' : 'Each month', L, chartTop - 34)
   const max = Math.max(1, ...data.series.map((s) => s.total))
   if (opts.mode === 'amount') {
     ctx.textAlign = 'right'

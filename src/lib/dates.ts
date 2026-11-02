@@ -68,7 +68,7 @@ export function payCycle(iso: ISODate, startDay: number): Range {
 }
 
 /** Move a pay-cycle (or week) range one step back/forward. */
-export function shiftPeriod(range: Range, direction: -1 | 1, weekly: boolean): Range {
+export function shiftPeriod(range: Range, direction: number, weekly: boolean): Range {
   if (weekly) {
     const start = addDays(range.start, direction * 7)
     return { start, end: addDays(start, 6) }
