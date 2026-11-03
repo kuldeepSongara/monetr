@@ -42,13 +42,17 @@ After that, devices sync automatically when you make changes, open the app, or c
 
 ## Features
 
+- **Home** — safe to spend today with the pay cycle drawn day by day; step back with ‹ › to see how earlier months went (and add entries dated inside them); pick how each chart is drawn (ranked bars, share strip or donut; line, daily bars or running total).
+- **Reminders** — per device: bills, budgets running fast or over, a Friday weekend amount, an evening summary, and a morning check around 10–11 am even with the app closed (see Morning check). At most 4 a day.
+- **Catch-up after going over** — when a budget ends a cycle over, Monetr asks: take it from the next cycle, spread it over 3 (or 6), or let it go; never more than half a budget per cycle.
+- **Bills that change** — electricity and the like are reminders without a fixed amount; Mark paid asks what you paid and when.
 - **Fast entry** — expense, income or transfer; any currency with the rate prefilled from the last one you used; learned merchant → category rules; natural-language quick add (AI, with an offline parser when AI is down) and receipt scanning.
 - **Refunds** — open an expense → Refund / return (full or partial). Refunds reduce that category's spending rather than counting as income.
 - **Roommate split** — give a bill a split (percent or fixed). Each payment shows what to collect, a reminder you can share, and “Got it” records their share as a refund.
 - **Interactive report** — Insights or Settings → Interactive report: a single offline .html file with filterable charts (daily spikes, categories, monthly cash flow, merchants, weekdays) and a searchable table. On a phone it opens the share sheet.
 - **Bills** — next due date predicted from real payments (early/late payments never shift a cycle; missed payments are counted). Autopay bills are recorded on their due date and flagged for you to confirm the amount actually taken. Notifications while open, `.ics` export for calendar alarms.
 - **Budgets & safe-to-spend** — per category, per group of categories sharing one limit (e.g. Shopping + Dining), or overall; per pay cycle or week, rollover, allowance fallback.
-- **Savings pots** — for one-time buys (laptop, phone). Save up first, or pay back something you already bought over a few cycles. Pot purchases skip the cycle budget and spike alerts but stay in history and charts; each pot's per-cycle amount is held back from safe-to-spend. Big recent purchases get a suggestion — never moved automatically.
+- **Savings pots** — for one-time buys (laptop, phone). Save up first, or pay back something you already bought over a few cycles. Each pot's per-cycle amount comes out of the budget you choose (pots made earlier use the budget covering their purchase). Pot purchases skip the cycle budget and spike alerts but stay in history and charts. Big recent purchases get a suggestion — never moved automatically.
 - **Share charts** — a PNG of total, category split and spending over time for family or friends (Dashboard or Insights). This month by default; amounts or percentages only; hide categories. No merchants, notes or transactions.
 - **Investments** — holdings derived from buy/sell/dividend/interest/fee transactions: quantity, average cost, realised and unrealised P/L. Currency profiles per country, and transfers between them recorded with the bank's real debited/credited amounts.
 - **flagIt** — AI review of your actual numbers (spikes, duplicates, subscriptions, likely FX fees), habit forecast, “before you buy” check against budget and bills, and statement import from screenshot/PDF/CSV/text with an editable review list (duplicates and low-confidence lines unticked).
