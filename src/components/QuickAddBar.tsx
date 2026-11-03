@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowRight, Images, Loader2, Receipt, ScanLine, Sparkles } from 'lucide-react'
 import { useApp } from '../store'
 import type { EditorSeed } from './TransactionEditor'
@@ -14,11 +14,23 @@ export function QuickAddBar({
   onSeed,
   className,
   placeholder = 'Try “coffee 4.50 yesterday” or “uber 18 last friday”',
+  focusOnMount,
+  scanOnMount,
 }: {
   onSeed: (seed: EditorSeed) => void
   className?: string
   placeholder?: string
+  /** Opened from the home-screen “Quick add” shortcut: put the cursor in the box straight away. */
+  focusOnMount?: boolean
+  /** Opened from the “Scan receipt” shortcut. */
+  scanOnMount?: boolean
 }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (focusOnMount) inputRef.current?.focus()
+    if (scanOnMount) setMenuOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusOnMount, scanOnMount])
   const { categories, settings, profiles, rules, today, notify } = useApp()
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -144,6 +156,7 @@ export function QuickAddBar({
     >
       <Sparkles className="h-4 w-4 shrink-0 text-muted" />
       <input
+        ref={inputRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

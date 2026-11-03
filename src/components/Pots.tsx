@@ -6,7 +6,8 @@ import { deletePot, savePot, setTxnPot } from '../db/db'
 import { addDays, daysBetween, formatDate, todayISO } from '../lib/dates'
 import { formatMoney, fromMajorString, majorString } from '../lib/money'
 import { cyclesUntil, perCycleFor, rebasePot, type PotStatus } from '../lib/pots'
-import { Badge, Button, Card, Confirm, Field, Input, Modal, ProgressBar, Segmented, cn } from './ui'
+import { fundingBudgets, potFundingBudget, suggestFundingBudget } from '../lib/budgetAdjust'
+import { Badge, Button, Card, Confirm, Field, Input, Modal, ProgressBar, Segmented, Select, cn } from './ui'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const monthYear = (iso?: string) => (iso ? `${MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}` : '')
@@ -28,7 +29,11 @@ export function isBigPurchase(baseAmount: number, cycleLimit: number): boolean {
 export type PotPreset = { kind: 'payback'; txnIds: string[] } | { kind: 'save' }
 
 export function PotsSection() {
-  const { potList, transactions, safe, settings, today } = useApp()
+  const { potList, transactions, safe, settings, today, budgets, rows } = useApp()
+  const payerLabel = (pot: Pot) => {
+    const b = potFundingBudget(pot, budgets, transactions)
+    return b ? rows.find((r) => r.budget.id === b.id)?.label ?? 'a budget' : null
+  }
   const currency = settings.currency
   const [editorOpen, setEditorOpen] = useState(false)
   const [editing, setEditing] = useState<Pot | null>(null)
@@ -74,7 +79,7 @@ export function PotsSection() {
       <div className="flex items-center justify-between px-0.5">
         <div>
           <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Savings pots</h2>
-          <p className="text-[10px] text-muted">For one-time buys — a laptop, a phone. Paid from the pot, not one month’s budget.</p>
+          <p className="text-[10px] text-muted">For one-time buys — a laptop, a phone. Paid a little each cycle from the budget you choose, not all in one month.</p>
         </div>
         <Button size="sm" onClick={() => open(null, { kind: 'save' })}>
           <Plus className="h-3.5 w-3.5" /> Pot
@@ -101,7 +106,7 @@ export function PotsSection() {
       {potList.length ? (
         <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
           {potList.map((s) => (
-            <PotCard key={s.pot.id} status={s} currency={currency} onEdit={() => open(s.pot, null)} onRemove={() => setRemoving(s)} />
+            <PotCard key={s.pot.id} status={s} currency={currency} payer={payerLabel(s.pot)} onEdit={() => open(s.pot, null)} onRemove={() => setRemoving(s)} />
           ))}
         </div>
       ) : !suggestions.length ? (
@@ -149,7 +154,7 @@ export function PotsSection() {
   )
 }
 
-function PotCard({ status: s, currency, onEdit, onRemove }: { status: PotStatus; currency: string; onEdit: () => void; onRemove: () => void }) {
+function PotCard({ status: s, currency, payer, onEdit, onRemove }: { status: PotStatus; currency: string; payer: string | null; onEdit: () => void; onRemove: () => void }) {
   const pct = s.need ? (s.setAside / s.need) * 100 : 0
   const badge =
     s.state === 'done'
@@ -208,7 +213,9 @@ function PotCard({ status: s, currency, onEdit, onRemove }: { status: PotStatus;
             <button type="button" onClick={onRemove} className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] font-medium text-muted hover:text-bad">
               <Trash2 className="h-3 w-3" /> Remove
             </button>
-            <span className="ml-auto text-[9px] text-muted/70">{formatMoney(s.pot.perCycle, currency)}/cycle</span>
+            <span className="ml-auto text-right text-[10px] text-muted">
+              {formatMoney(s.pot.perCycle, currency)}/cycle · {payer ? `from ${payer}` : 'from safe-to-spend'}
+            </span>
           </div>
         </div>
       </div>
@@ -229,7 +236,11 @@ function PotEditor({
   preset: PotPreset | null
   onSaved: () => Promise<void>
 }) {
-  const { transactions, settings, today, notify } = useApp()
+  const { transactions, settings, today, notify, budgets, rows } = useApp()
+  const payers = fundingBudgets(budgets)
+  const budgetLabel = (id: string) => rows.find((r) => r.budget.id === id)?.label ?? 'Budget'
+  /** '' = not chosen yet (use the suggestion), a budget id, or 'none'. */
+  const [payerId, setPayerId] = useState('')
   const currency = settings.currency
   const [kind, setKind] = useState<Pot['kind']>('save')
   const [name, setName] = useState('')
@@ -262,6 +273,7 @@ function PotEditor({
     setPerTouched(Boolean(pot))
     setMonths('6')
     setSelected(pot ? transactions.filter((t) => t.potId === pot.id).map((t) => t.id) : pre)
+    setPayerId(pot?.budgetId ?? '')
     setSearch('')
     setError('')
   }
@@ -279,6 +291,8 @@ function PotEditor({
 
   const selectedTxns = transactions.filter((t) => selected.includes(t.id))
   const selectedTotal = selectedTxns.reduce((s, t) => s + t.baseAmount, 0)
+  const suggestedPayer = suggestFundingBudget(selectedTxns.map((t) => t.categoryId), payers)
+  const chosenPayer = payerId === 'none' ? undefined : payerId ? payers.find((b) => b.id === payerId) : pot && !pot.budgetId ? potFundingBudget(pot, budgets, transactions) : suggestedPayer
   const targetMinor = fromMajorString(target, currency) ?? 0
   const targetDate = byMonth ? `${byMonth}-28` : undefined
 
@@ -300,7 +314,8 @@ function PotEditor({
     if (perMinor <= 0) return setError(kind === 'save' ? 'Pick a month to buy by, or enter an amount per cycle.' : 'Enter an amount per cycle.')
     setSaving(true)
     try {
-      const base = { name: name.trim() || (kind === 'save' ? 'Savings pot' : selectedTxns[0]?.merchant ?? 'Pay back'), emoji: emoji.trim() || undefined, kind, target: kind === 'save' ? targetMinor : 0, perCycle: perMinor, targetDate: kind === 'save' ? targetDate : undefined }
+      const budgetId = chosenPayer ? chosenPayer.id : 'none'
+      const base = { budgetId, name: name.trim() || (kind === 'save' ? 'Savings pot' : selectedTxns[0]?.merchant ?? 'Pay back'), emoji: emoji.trim() || undefined, kind, target: kind === 'save' ? targetMinor : 0, perCycle: perMinor, targetDate: kind === 'save' ? targetDate : undefined }
       // Changing the per-cycle amount only affects this cycle onwards.
       const timing = pot ? (pot.perCycle === perMinor ? { startDate: pot.startDate, carried: pot.carried } : rebasePot(pot, transactions, settings, today)) : { startDate: todayISO() }
       const id = await savePot({ ...base, ...timing }, pot?.id)
@@ -422,10 +437,31 @@ function PotEditor({
         ) : null}
 
         <Field
+          label="Paid from"
+          hint={
+            chosenPayer
+              ? `${budgetLabel(chosenPayer.id)} gets this much less to spend each cycle${chosenPayer.categoryId !== 'all' && payers.some((b) => b.categoryId === 'all') ? ', and so does Everything' : ''}.`
+              : payers.length
+                ? 'Held back from safe-to-spend only — no budget card changes.'
+                : 'You have no pay-cycle budgets, so it’s held back from safe-to-spend.'
+          }
+        >
+          <Select value={chosenPayer ? chosenPayer.id : 'none'} onChange={(e) => setPayerId(e.target.value)}>
+            {payers.map((b) => (
+              <option key={b.id} value={b.id}>
+                {budgetLabel(b.id)}
+                {suggestedPayer?.id === b.id ? ' (suggested)' : ''}
+              </option>
+            ))}
+            <option value="none">No budget — safe-to-spend only</option>
+          </Select>
+        </Field>
+
+        <Field
           label="Set aside per pay cycle"
           hint={
             perMinor > 0
-              ? `${formatMoney(perMinor, currency)} is held back from safe-to-spend each cycle${kind === 'save' && targetMinor ? `, ready in about ${Math.ceil(targetMinor / perMinor)} cycle${Math.ceil(targetMinor / perMinor) === 1 ? '' : 's'}` : kind === 'payback' && selectedTotal ? `, paid back in about ${Math.ceil(selectedTotal / perMinor)} cycle${Math.ceil(selectedTotal / perMinor) === 1 ? '' : 's'}` : ''}.`
+              ? `${formatMoney(perMinor, currency)} comes out of ${chosenPayer ? budgetLabel(chosenPayer.id) : 'safe-to-spend'} each cycle${kind === 'save' && targetMinor ? `, ready in about ${Math.ceil(targetMinor / perMinor)} cycle${Math.ceil(targetMinor / perMinor) === 1 ? '' : 's'}` : kind === 'payback' && selectedTotal ? `, paid back in about ${Math.ceil(selectedTotal / perMinor)} cycle${Math.ceil(selectedTotal / perMinor) === 1 ? '' : 's'}` : ''}.`
               : undefined
           }
         >

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { Link, useOutletContext } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useOutletContext, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -26,6 +26,8 @@ import { QuickAddBar } from '../components/QuickAddBar'
 import { CategoryBars, CategoryDonut, CategoryStrip, ChartStylePicker, CumulativeChart, DailyBars, SpendTrendChart } from '../components/charts'
 import { ShareCharts } from '../components/ShareCharts'
 import { CycleHero } from '../components/CycleHero'
+import { OverspendPrompts } from '../components/OverspendPrompts'
+import { NotifyPrompt } from '../components/NotifyPrompt'
 import { Badge, Button, Card, EmptyState, ProgressBar, SectionTitle, cn } from '../components/ui'
 import { addDays, daysBetween, dueLabel, formatDate, shiftPeriod, type Range } from '../lib/dates'
 import { budgetRows, changePct, byCategory, computeSafeToSpend, dailySeries, totals, txnRange } from '../lib/analytics'
@@ -48,9 +50,11 @@ export function Dashboard() {
     categoryMap,
     budgets,
     everyday,
+    budgetAdjust,
   } = useApp()
   const toVerify = useMemo(() => payments.filter((p) => p.autoRecorded && !p.verified), [payments])
-  const { duplicates, saveSettings } = useApp()
+  const { duplicates, saveSettings, nudges } = useApp()
+  const paceNudges = useMemo(() => nudges.filter((n) => n.kind === 'pace' || n.kind === 'over' || n.kind === 'projection'), [nudges])
   // Chart shapes are a preference that follows you to your other devices.
   const catStyle = settings.chartStyles?.categories ?? 'bars'
   const trendStyle = settings.chartStyles?.trend ?? 'line'
@@ -61,6 +65,15 @@ export function Dashboard() {
   const [editorOpen, setEditorOpen] = useState(false)
 
   const currency = settings.currency
+  // Home-screen shortcuts open `#/?quick=1`, `#/?add=expense` or `#/?scan=1`.
+  const [params, setParams] = useSearchParams()
+  const [launch] = useState(() => (params.get('quick') ? 'quick' : params.get('scan') ? 'scan' : params.get('add') ? 'add' : null))
+  useEffect(() => {
+    if (!launch) return
+    if (launch === 'add') openAdd()
+    setParams({}, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // 0 = this pay cycle, -1 = the one before, and so on. Lets you look back once a month is over.
   const [offset, setOffset] = useState(0)
   const isPast = offset < 0
@@ -68,8 +81,8 @@ export function Dashboard() {
   const rangeLabel = cycleLabel(range)
   // Budgets as they stood at the end of the cycle you're looking at.
   const rows = useMemo(
-    () => (isPast ? budgetRows(budgets, everyday, categories, settings, range.end) : liveRows),
-    [isPast, budgets, everyday, categories, settings, range.end, liveRows],
+    () => (isPast ? budgetRows(budgets, everyday, categories, settings, range.end, budgetAdjust) : liveRows),
+    [isPast, budgets, everyday, categories, settings, range.end, liveRows, budgetAdjust],
   )
   const pastCycle = useMemo(() => {
     if (!isPast) return undefined
@@ -142,7 +155,7 @@ export function Dashboard() {
         )
 
       case 'alerts':
-        if (!alertBills.length && !anomalies.length && !toVerify.length && !owedCount && !duplicates.length) return null
+        if (!alertBills.length && !anomalies.length && !toVerify.length && !owedCount && !duplicates.length && !paceNudges.length) return null
         return (
           <div className={cn(span.alerts, 'flex')} key={id}>
             <Card className="flex w-full flex-col border-line bg-surface2/30">
@@ -151,6 +164,8 @@ export function Dashboard() {
                 <p className="text-xs font-semibold text-ink">
                   {alertBills.length
                     ? `${alertBills.length} bill${alertBills.length > 1 ? 's' : ''} need attention`
+                    : paceNudges.length
+                      ? paceNudges[0].title
                     : duplicates.length
                       ? 'Possible double charge'
                     : toVerify.length
@@ -161,6 +176,11 @@ export function Dashboard() {
                 </p>
               </div>
               <div className="space-y-1.5">
+                {paceNudges.slice(0, 3).map((n) => (
+                  <Link key={n.id} to={n.url} className="block text-[11px]">
+                    <span className="font-medium text-ink">{n.title}.</span> <span className="text-muted">{n.body}</span>
+                  </Link>
+                ))}
                 {duplicates.length ? (
                   <Link to="/transactions" className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="truncate text-ink/90">
@@ -491,6 +511,8 @@ export function Dashboard() {
   return (
     <div className="space-y-3.5">
       <QuickAddBar
+        focusOnMount={launch === 'quick'}
+        scanOnMount={launch === 'scan'}
         onSeed={(seed) => {
           setEditId(undefined)
           setEditorOpen(true)
@@ -511,6 +533,9 @@ export function Dashboard() {
             : null
         }
       />
+
+      {!isPast ? <NotifyPrompt /> : null}
+      {!isPast ? <OverspendPrompts /> : null}
 
       <div className="grid grid-cols-1 items-stretch gap-3.5 lg:grid-cols-12">
         {widgets.map((id) => renderWidget(id))}

@@ -77,6 +77,18 @@ Running the app locally but syncing through the deployment? Set **Sync server** 
 
 ---
 
+## Morning check (notifications with the app closed)
+
+Once a day (15:00 UTC — about 10–11 am in Toronto) a Vercel cron job sends every device that turned reminders on an **empty** wake-up push. The device's service worker then reads your data on the device, folds in the latest encrypted copy from your other devices, and sends one or two notifications — a budget running fast ("Slow down on Shopping…"), a budget already over, a bill due, a decision waiting — or today's spendable amount. The server only stores each device's push address; it never sees any numbers.
+
+Set up once in Vercel → Settings → Environment Variables, then redeploy:
+
+1. `npm run vapid` locally and copy the two keys → `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`.
+2. `VAPID_SUBJECT` = `mailto:you@example.com` (any address you own; push services use it to contact you).
+3. `CRON_SECRET` = any long random string (Vercel sends it to the cron job so nobody else can trigger it).
+
+Then on each device: Settings → Reminders → turn on. The line under it says "Morning check is on". Works on Android Chrome, desktop Chrome/Edge/Firefox, macOS Safari, and iPhone/iPad when Monetr is added to the Home Screen. Hobby plans run cron jobs once a day within the hour.
+
 ## AI keys
 
 1. Get a key from your provider. For Gemini, use [Google AI Studio](https://aistudio.google.com/apikey).
@@ -111,5 +123,7 @@ src/
   lib/          money, dates, analytics, bills, investments, sync, biometric, PIN hashing, rules/FX suggestions
   pages/        Dashboard, Transactions, Bills, Budgets, Investments, flagIt, Insights, Guide, Settings
   __tests__/    vitest unit tests
-public/         manifest, service worker, generated icons
+public/         manifest, generated icons
+src/sw/         service worker (bundled to dist/sw.js by scripts/build-sw.mjs)
+api/push, api/cron  push subscriptions and the daily morning wake-up
 ```

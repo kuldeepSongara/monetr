@@ -103,7 +103,17 @@ export function setSyncState(state: SyncState | null): void {
   } catch {
     /* storage blocked */
   }
+  mirrorSyncState(state)
   emit()
+}
+
+/**
+ * The service worker can't read localStorage, so it gets a copy in IndexedDB — used only to fetch
+ * the latest encrypted copy for the morning check (see src/sw). Never leaves the device.
+ */
+export function mirrorSyncState(state: SyncState | null = getSyncState()): void {
+  const op: Promise<unknown> = state?.enabled ? db.meta.put({ key: 'syncMirror', value: state }) : db.meta.delete('syncMirror')
+  op.catch(() => {})
 }
 
 export function patchSyncState(patch: Partial<SyncState>): SyncState | null {

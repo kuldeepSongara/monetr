@@ -225,6 +225,8 @@ export interface BudgetRow {
   spent: number
   limit: number
   rollover: number
+  /** Taken off this cycle's limit: savings-pot contributions and catch-up for earlier overspending. */
+  adjustments: BudgetAdjustment[]
   remaining: number
   usedPct: number
   daysLeft: number
@@ -232,6 +234,15 @@ export interface BudgetRow {
   status: 'ok' | 'warn' | 'over'
   range: Range
 }
+
+export interface BudgetAdjustment {
+  kind: 'pot' | 'catchup'
+  label: string
+  amount: number
+}
+
+/** Supplies the deductions for a budget in a period (see lib/budgetAdjust). */
+export type AdjustFn = (budget: Budget, range: Range) => BudgetAdjustment[]
 
 export function periodFor(period: 'cycle' | 'weekly', settings: Settings, today: ISODate = todayISO()): Range {
   if (period === 'weekly') {
@@ -260,6 +271,7 @@ export function budgetRows(
   categories: Category[],
   settings: Settings,
   today: ISODate = todayISO(),
+  adjust?: AdjustFn,
 ): BudgetRow[] {
   const catMap = new Map(categories.map((c) => [c.id, c]))
   const rows: BudgetRow[] = []
@@ -273,10 +285,13 @@ export function budgetRows(
 
     const spent = sum(txns.filter((t) => inPeriod(t, range)).map(spendDelta))
     const prevSpent = sum(txns.filter((t) => inPeriod(t, prevRange)).map(spendDelta))
-    // Only roll over from a period the budget actually existed in.
+    // Only roll over from a period the budget actually existed in, and only money that was really
+    // free last time (after that period's own deductions).
     const existedBefore = !b.createdAt || b.createdAt.slice(0, 10) <= prevRange.end
-    const rollover = b.rollover && existedBefore ? Math.min(b.amount, Math.max(0, b.amount - prevSpent)) : 0
-    const limit = b.amount + rollover
+    const prevBase = b.amount - sum((adjust?.(b, prevRange) ?? []).map((a) => a.amount))
+    const rollover = b.rollover && existedBefore ? Math.min(b.amount, Math.max(0, prevBase - prevSpent)) : 0
+    const adjustments = (adjust?.(b, range) ?? []).filter((a) => a.amount > 0)
+    const limit = Math.max(0, b.amount + rollover - sum(adjustments.map((a) => a.amount)))
     const remaining = limit - spent
     const daysLeft = Math.max(1, daysBetween(today, range.end) + 1)
     const usedPct = limit ? (spent / limit) * 100 : 0
@@ -308,6 +323,7 @@ export function budgetRows(
       spent,
       limit,
       rollover,
+      adjustments,
       remaining,
       usedPct,
       daysLeft,

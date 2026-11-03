@@ -4,6 +4,7 @@ import { useApp } from '../store'
 import type { CategorySource, Txn, TxnType } from '../types'
 import { addRefund, addTransaction, deleteTransaction, learnRules, savePot, setTxnPot, updateTransaction } from '../db/db'
 import { perCycleFor } from '../lib/pots'
+import { suggestFundingBudget } from '../lib/budgetAdjust'
 import { isBigPurchase } from './Pots'
 import { formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor, currencyInfo } from '../lib/money'
@@ -36,7 +37,7 @@ const SOURCE_LABEL: Record<CategorySource, string> = {
 }
 
 export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
-  const { transactions, categories, settings, rules, currencyProfiles, potList, safe, refresh, notify } = useApp()
+  const { transactions, categories, settings, rules, currencyProfiles, potList, safe, budgets, refresh, notify } = useApp()
   const existing = useMemo(() => transactions.find((t) => t.id === txnId), [transactions, txnId])
 
   const [type, setType] = useState<TxnType>('expense')
@@ -159,6 +160,8 @@ export function TransactionEditor({ open, onClose, txnId, seed }: Props) {
         const potId = await savePot({
           name: merchant.trim() || 'Pay back',
           kind: 'payback',
+          // Paid by the budget that covers this purchase (you can change it on the pot).
+          budgetId: suggestFundingBudget([categoryId], budgets)?.id ?? 'none',
           target: 0,
           perCycle: perCycleFor(basePreview, potMonths),
           startDate: todayISO(),

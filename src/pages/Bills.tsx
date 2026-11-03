@@ -29,6 +29,7 @@ import {
 import type { BillPayment } from '../types'
 import { addDays, dueLabel, formatDate, todayISO } from '../lib/dates'
 import { CURRENCIES, formatMoney, fromMajorString, majorString, toBaseMinor } from '../lib/money'
+import { enableNotifications, unsubscribeMorningPush } from '../lib/notify'
 import { confidenceLabel, expectedAmount, frequencyLabel } from '../lib/bills'
 import {
   Badge,
@@ -188,13 +189,14 @@ export function Bills() {
         notify('This browser cannot show notifications', 'error')
         return
       }
-      const perm = await Notification.requestPermission()
+      const perm = Notification.permission === 'granted' ? 'granted' : await enableNotifications()
       if (perm !== 'granted') {
         notify('Notification permission was declined. In-app alerts still work.', 'error')
         return
       }
     }
     await saveSettings({ notifications: next })
+    if (!next) void unsubscribeMorningPush()
   }
 
   return (
@@ -232,8 +234,8 @@ export function Bills() {
         <Toggle
           checked={settings.notifications}
           onChange={toggleNotifications}
-          label="Bill notifications"
-          hint="Shown while Monetr is open. Export .ics for alarms that fire even when it's closed. Autopay bills are recorded automatically on their due date for you to confirm."
+          label="Reminders on this device"
+          hint="Bills the day before and on the day, plus budget heads-ups. For alarms that always fire, also export .ics to your calendar. Autopay bills are recorded on their due date for you to confirm."
         />
         <div className="flex items-center justify-between gap-2 rounded-xl border border-line/70 bg-surface2/50 px-3 py-2 text-[11px] text-muted">
           <span>Reminders are predicted from actual payment dates.</span>

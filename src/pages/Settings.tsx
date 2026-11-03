@@ -1,4 +1,5 @@
 import { SyncPanel } from '../components/sync/SyncPanel'
+import { enableNotifications, needsHomeScreenForNotifications, notificationPermission, subscribeMorningPush, unsubscribeMorningPush, type PushResult } from '../lib/notify'
 import { SecurityCard } from '../components/settings/SecurityCard'
 import { CurrencyProfilesCard } from '../components/settings/CurrencyProfilesCard'
 import { RulesCard } from '../components/settings/RulesCard'
@@ -375,24 +376,23 @@ export function Settings() {
 
   async function toggleNotifications(next: boolean) {
     if (next) {
-      if (typeof Notification === 'undefined') {
-        notify('This browser does not support notifications. Use the .ics export instead.', 'error')
+      const permission = notificationPermission()
+      if (permission === 'unsupported') {
+        notify(needsHomeScreenForNotifications() ? 'Add Monetr to your Home Screen first, then turn reminders on from there.' : 'This browser can’t show notifications. Use the .ics export for bills.', 'error')
         return
       }
-      if (Notification.permission === 'default') {
-        const permission = await Notification.requestPermission()
-        if (permission !== 'granted') {
-          notify('Notifications were not allowed. You can still export a calendar file.', 'error')
-          return
-        }
+      if (permission === 'denied') {
+        notify('Notifications are blocked for this site. Allow them in your browser’s site settings, then try again.', 'error')
+        return
       }
-      if (Notification.permission !== 'granted') {
-        notify('Notifications are blocked in your browser settings.', 'error')
+      if (permission === 'default' && (await enableNotifications()) !== 'granted') {
+        notify('Notifications were not allowed.', 'error')
         return
       }
     }
     await saveSettings({ notifications: next })
-    if (next) notify('Bill alerts will appear while Monetr is open.', 'success')
+    if (next) notify('Reminders are on for this device', 'success')
+    else void unsubscribeMorningPush()
   }
 
   /* -------------------------------- categories ------------------------------- */
@@ -968,9 +968,10 @@ export function Settings() {
           <Toggle
             checked={settings.notifications}
             onChange={toggleNotifications}
-            label="Browser notifications for due bills"
-            hint="These only fire while Monetr is open — there is no server to push in the background."
+            label="Reminders and nudges on this device"
+            hint="Bills before they’re due, budgets running fast, a morning check and an evening summary. Turn it on separately on each device."
           />
+          <MorningCheckStatus enabled={settings.notifications} />
           <div className="rounded-xl border border-line/70 bg-surface2/40 p-3">
             <p className="text-[11px] font-semibold text-ink">Reliable reminders on your phone</p>
             <p className="mt-1 text-[10px] leading-relaxed text-muted">
@@ -1389,4 +1390,32 @@ function MiniStat({ label, value }: { label: string; value: string }) {
       <p className="tnum mt-0.5 text-sm font-bold text-ink">{value}</p>
     </div>
   )
+}
+
+/** Whether this device gets the daily morning check (needs the server's push keys). */
+function MorningCheckStatus({ enabled }: { enabled: boolean }) {
+  const [state, setState] = useState<PushResult | 'checking' | null>(null)
+  useEffect(() => {
+    if (!enabled) return setState(null)
+    setState('checking')
+    let live = true
+    void subscribeMorningPush().then((r) => live && setState(r))
+    return () => {
+      live = false
+    }
+  }, [enabled])
+  if (!state) return null
+  const text =
+    state === 'checking'
+      ? 'Checking the morning check…'
+      : state === 'subscribed'
+        ? 'Morning check is on: around 10–11 am this device looks at your numbers — even with Monetr closed — and tells you if a budget is running fast or a bill is due.'
+        : state === 'not-configured'
+          ? 'Morning check isn’t set up on the server yet (push keys missing). Evening reminders still work while Monetr is open or installed.'
+          : state === 'full'
+            ? 'The morning check already covers 20 devices. Turn reminders off on one you no longer use, then come back here.'
+            : state === 'unsupported'
+            ? 'This browser can’t receive the morning check while Monetr is closed. Reminders still arrive while it’s open.'
+            : 'Couldn’t register for the morning check. It will retry next time you open Monetr.'
+  return <p className={cn('rounded-lg px-3 py-2 text-[11px] leading-relaxed', state === 'subscribed' ? 'bg-good/[0.1] text-good' : 'bg-surface2 text-muted')}>{text}</p>
 }

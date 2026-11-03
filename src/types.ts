@@ -254,7 +254,27 @@ export interface Budget {
   amount: number
   rollover: boolean
   period: 'cycle' | 'weekly'
+  /** When a pay cycle ends over this budget: ask (default), or always take it from the next cycle(s), or let it go. */
+  overspendPlan?: 'ask' | CarryPlan
   archived?: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type CarryPlan = 'next' | 'spread3' | 'spread6' | 'waive'
+
+/**
+ * What you decided about one budget going over in one pay cycle. The deficit is taken from the
+ * following cycle(s) — never more than half the budget in any one cycle; the rest moves on.
+ */
+export interface BudgetCarry {
+  id: string
+  budgetId: string
+  /** Start date of the pay cycle that went over. */
+  cycleStart: ISODate
+  /** How far over it went, base minor units. */
+  amount: number
+  plan: CarryPlan
   createdAt: string
   updatedAt: string
 }
@@ -281,6 +301,11 @@ export interface Pot {
   carried?: number
   /** Save pots: when you want to buy. */
   targetDate?: ISODate
+  /**
+   * The budget whose limit pays the per-cycle amount ('none' = only safe-to-spend). Unset on
+   * pots made before budgets could be chosen: Monetr then picks the budget covering the purchase.
+   */
+  budgetId?: string
   archived?: boolean
   createdAt: string
   updatedAt: string
@@ -536,5 +561,6 @@ export interface BackupFile {
     flags?: FlagEntry[]
     flagIdeas?: FlagIdea[]
     pots?: Pot[]
+    budgetCarries?: BudgetCarry[]
   }
 }

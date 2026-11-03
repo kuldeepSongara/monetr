@@ -11,6 +11,8 @@ import {
 import type {
   AILogEntry,
   Pot,
+  BudgetCarry,
+  CarryPlan,
   AIProfile,
   Bill,
   BillPayment,
@@ -33,18 +35,22 @@ import {
   listCurrencyProfiles,
   reconcileAutopay,
   wipeAll,
+  decideOverspend,
 } from './db/db'
 import { isAutoLockSuspended } from './lib/lockGuard'
 import { hashPin, lockoutMs, verifyPin } from './lib/pin'
 import { verifyBiometric, type BiometricCredential } from './lib/biometric'
-import { requestAutoSync, setSyncState, startAutoSync } from './lib/sync'
+import { mirrorSyncState, requestAutoSync, setSyncState, startAutoSync } from './lib/sync'
 import { accentVars } from './lib/theme'
+import { makeAdjust, unfundedPots, type OverspendPrompt } from './lib/budgetAdjust'
 import { potStatuses, potTxnIds, type PotStatus } from './lib/pots'
-import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type BudgetRow, type SafeToSpend } from './lib/analytics'
+import { budgetRows, computeSafeToSpend, detectAnomalies, detectSubscriptions, type AdjustFn, type BudgetRow, type SafeToSpend } from './lib/analytics'
 import { predictBill, type BillSchedule } from './lib/bills'
 import { findDuplicates, type DuplicatePair } from './lib/duplicates'
 import { resumeImports } from './lib/importJobs'
-import { todayISO } from './lib/dates'
+import { addDays, payCycle, shiftPeriod, todayISO } from './lib/dates'
+import { computeNudges, type Nudge } from './lib/nudges'
+import { deliverDue, publishNudges, registerBackgroundNudges, subscribeMorningPush } from './lib/notify'
 import { randomSalt } from './lib/utils'
 
 export interface Toast {
@@ -68,6 +74,7 @@ interface AppState {
   investments: Investment[]
   investmentTxs: InvestmentTx[]
   pots: Pot[]
+  carries: BudgetCarry[]
 }
 
 export type UnlockResult = { ok: true } | { ok: false; retryInMs?: number }
@@ -82,6 +89,12 @@ interface StoreValue extends AppState {
   potList: PotStatus[]
   /** Transactions minus purchases paid from savings pots — what budgets count. */
   everyday: Txn[]
+  /** Deductions (pot contributions, catch-up) for any budget and period — pass to budgetRows. */
+  budgetAdjust: AdjustFn
+  /** Budgets that went over last cycle and are waiting for you to decide what happens next. */
+  overspendPrompts: OverspendPrompt[]
+  /** Today's heads-ups (budget pace, bills, summary), most important first. */
+  nudges: Nudge[]
   anomalies: ReturnType<typeof detectAnomalies>
   subscriptions: ReturnType<typeof detectSubscriptions>
   /** Possible double entries / double charges, for you to review. Never acted on automatically. */
@@ -120,6 +133,7 @@ const defaultState: AppState = {
   investments: [],
   investmentTxs: [],
   pots: [],
+  carries: [],
 }
 
 const AppContext = createContext<StoreValue | null>(null)
@@ -145,7 +159,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const firstLoad = useRef(true)
   const refresh = useCallback(async (opts?: { fromSync?: boolean }) => {
-    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs, pots] = await Promise.all([
+    const [settingsArr, categories, transactions, bills, payments, budgets, profiles, rules, logs, currencyProfiles, investments, investmentTxs, pots, carries] = await Promise.all([
       db.settings.toArray(),
       db.categories.orderBy('order').toArray(),
       db.transactions.toArray(),
@@ -159,6 +173,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       db.investments.toArray().catch(() => []),
       db.investmentTxs.toArray().catch(() => []),
       db.pots.toArray().catch(() => []),
+      db.budgetCarries.toArray().catch(() => []),
     ])
     const settings = settingsArr[0] ?? makeDefaultSettings()
     if (firstLoad.current) {
@@ -181,6 +196,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       investments,
       investmentTxs,
       pots,
+      carries,
     })
     storageEstimate().then(setUsage).catch(() => {})
     if (!opts?.fromSync) requestAutoSync()
@@ -427,12 +443,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return ids.size ? state.transactions.filter((t) => !ids.has(t.id)) : state.transactions
   }, [state.transactions, state.pots])
 
-  const rows = useMemo(
-    () => budgetRows(state.budgets, everyday, state.categories, state.settings, today),
-    [state.budgets, everyday, state.categories, state.settings, today],
+  const budgetAdjust = useMemo(
+    () => makeAdjust({ budgets: state.budgets, pots: state.pots, carries: state.carries, txns: state.transactions, settings: state.settings }),
+    [state.budgets, state.pots, state.carries, state.transactions, state.settings],
   )
 
-  const potsReserved = useMemo(() => potList.reduce((s, p) => s + p.thisCycle, 0), [potList])
+  const rows = useMemo(
+    () => budgetRows(state.budgets, everyday, state.categories, state.settings, today, budgetAdjust),
+    [state.budgets, everyday, state.categories, state.settings, today, budgetAdjust],
+  )
+
+  // Pots paid by a budget already lower that budget (and so safe-to-spend); only the rest are held back here.
+  const potsReserved = useMemo(() => {
+    const unfunded = new Set(unfundedPots(state.pots, state.budgets, state.transactions).map((p) => p.id))
+    return potList.filter((p) => unfunded.has(p.pot.id)).reduce((s, p) => s + p.thisCycle, 0)
+  }, [potList, state.pots, state.budgets, state.transactions])
+
+  const overspendPrompts = useMemo<OverspendPrompt[]>(() => {
+    const cycle = payCycle(today, state.settings.payCycleStartDay)
+    const prev = shiftPeriod(cycle, -1, false)
+    const decided = new Set(state.carries.map((c) => c.id))
+    const out: OverspendPrompt[] = []
+    for (const b of state.budgets) {
+      if (b.archived || b.period !== 'cycle') continue
+      if (b.createdAt && b.createdAt.slice(0, 10) > prev.end) continue
+      if (decided.has(`carry_${b.id}_${prev.start}`)) continue
+      const [row] = budgetRows([b], everyday, state.categories, state.settings, prev.end, budgetAdjust)
+      if (!row || row.spent <= row.limit) continue
+      const over = row.spent - row.limit
+      out.push({ budget: b, cycleStart: prev.start, label: row.label, over, large: over > b.amount })
+    }
+    return out
+  }, [state.budgets, state.carries, everyday, state.categories, state.settings, today, budgetAdjust])
+
+  // A budget set to "always" handles its overspend without asking.
+  useEffect(() => {
+    const auto = overspendPrompts.filter((p) => p.budget.overspendPlan && p.budget.overspendPlan !== 'ask')
+    if (!auto.length) return
+    void Promise.all(auto.map((p) => decideOverspend(p.budget.id, p.cycleStart, p.over, p.budget.overspendPlan as CarryPlan))).then(() => refresh())
+  }, [overspendPrompts, refresh])
 
   const safe = useMemo(
     () => computeSafeToSpend(rows, everyday, state.bills, schedules, state.settings, today, potsReserved),
@@ -447,34 +496,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const subscriptions = useMemo(() => detectSubscriptions(state.transactions, today), [state.transactions, today])
   const duplicates = useMemo(() => findDuplicates(state.transactions, today), [state.transactions, today])
 
-  // Local notification for bills due soon (only while the app is open — no server).
+  // Nudges: worked out from your numbers whenever they change, stored for the service worker, and
+  // shown as notifications when due (see lib/notify). Overspend decisions are counted below.
+  const askCount = overspendPrompts.filter((p) => !p.budget.overspendPlan || p.budget.overspendPlan === 'ask').length
+  const nudges = useMemo(() => {
+    if (!state.ready) return []
+    const base = { currency: state.settings.currency, rows, safe, txns: everyday, bills: state.bills, schedules, pots: potList, overspendCount: askCount }
+    const todayNudges = computeNudges({ ...base, today })
+    // Tomorrow morning's bill reminders too, so they can fire even if Monetr isn't opened first.
+    const tomorrow = computeNudges({ ...base, today: addDays(today, 1), overspendCount: 0 }).filter((n) => n.kind === 'bill')
+    return [...todayNudges, ...tomorrow]
+  }, [state.ready, state.settings.currency, rows, safe, everyday, state.bills, schedules, potList, askCount, today])
+
+  useEffect(() => {
+    if (!state.ready) return
+    void publishNudges(nudges).then(() => deliverDue(state.settings.notifications))
+  }, [nudges, state.ready, state.settings.notifications])
+
   useEffect(() => {
     if (!state.ready || !state.settings.notifications) return
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-    const key = `monetr:notified:${today}`
-    if (localStorage.getItem(key)) return
-    const due = state.bills
-      .filter((b) => b.active && !b.archived)
-      .map((b) => ({ bill: b, schedule: schedules.get(b.id) }))
-      .filter(
-        ({ schedule }) =>
-          schedule &&
-          !schedule.snoozed &&
-          (schedule.status === 'overdue' || schedule.status === 'due-soon'),
-      )
-    if (!due.length) return
-    const first = due[0]
-    const body =
-      due.length === 1
-        ? `${first.bill.name} · ${first.schedule?.status === 'overdue' ? 'overdue' : 'due soon'}`
-        : `${first.bill.name} and ${due.length - 1} more bill${due.length > 2 ? 's' : ''} need attention`
-    try {
-      new Notification('Monetr · bills', { body, icon: './icon-192.png', tag: 'monetr-bills' })
-      localStorage.setItem(key, '1')
-    } catch {
-      /* notifications may be blocked */
+    void registerBackgroundNudges()
+    // Keep this device's morning wake-up registered (refreshes the subscription; harmless if unset).
+    void subscribeMorningPush()
+    mirrorSyncState()
+    const tick = () => void deliverDue(true)
+    const timer = window.setInterval(tick, 60_000)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
     }
-  }, [state.ready, state.settings.notifications, state.bills, schedules, today])
+  }, [state.ready, state.settings.notifications])
 
   const value: StoreValue = {
     ...state,
@@ -485,6 +537,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     safe,
     potList,
     everyday,
+    budgetAdjust,
+    nudges,
+    overspendPrompts: overspendPrompts.filter((p) => !p.budget.overspendPlan || p.budget.overspendPlan === 'ask'),
     anomalies,
     subscriptions,
     duplicates,

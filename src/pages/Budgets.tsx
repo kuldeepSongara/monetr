@@ -5,6 +5,7 @@ import type { Budget } from '../types'
 import { deleteBudget, saveBudget } from '../db/db'
 import { budgetCategoryIds } from '../lib/analytics'
 import { PotsSection } from '../components/Pots'
+import { OverspendPrompts } from '../components/OverspendPrompts'
 import { addDays, formatDate, payCycle } from '../lib/dates'
 import { formatMoney, fromMajorString, majorString } from '../lib/money'
 import {
@@ -57,6 +58,7 @@ export function Budgets() {
 
   return (
     <div className="space-y-3.5">
+      <OverspendPrompts />
       <Card>
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -127,6 +129,24 @@ export function Budgets() {
                       {formatMoney(row.spent, currency)} of {formatMoney(row.limit, currency)}
                       {row.rollover > 0 ? ` · +${formatMoney(row.rollover, currency)} rolled` : ''}
                     </p>
+                    {row.adjustments.length ? (
+                      <div className="mt-1.5 space-y-0.5 rounded-lg bg-surface2/70 px-2 py-1.5 text-[11px]">
+                        <div className="flex justify-between text-muted">
+                          <span>Budget</span>
+                          <span className="tnum">{formatMoney(row.budget.amount + row.rollover, currency)}</span>
+                        </div>
+                        {row.adjustments.map((a, i) => (
+                          <div key={i} className="flex justify-between gap-2 text-muted">
+                            <span className="truncate">{a.kind === 'pot' ? `For ${a.label}` : a.label}</span>
+                            <span className="tnum shrink-0">−{formatMoney(a.amount, currency)}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between border-t border-line/70 pt-0.5 font-medium text-ink">
+                          <span>To spend this cycle</span>
+                          <span className="tnum">{formatMoney(row.limit, currency)}</span>
+                        </div>
+                      </div>
+                    ) : null}
 
                     <ProgressBar
                       value={row.usedPct}
@@ -318,6 +338,7 @@ function BudgetEditor({
   const [amount, setAmount] = useState(budget ? majorString(budget.amount, settings.currency) : '')
   const [rollover, setRollover] = useState(budget?.rollover ?? true)
   const [period, setPeriod] = useState<Budget['period']>(budget?.period ?? 'cycle')
+  const [overspendPlan, setOverspendPlan] = useState<NonNullable<Budget['overspendPlan']>>(budget?.overspendPlan ?? 'ask')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -336,6 +357,7 @@ function BudgetEditor({
     setAmount(budget ? majorString(budget.amount, settings.currency) : '')
     setRollover(budget?.rollover ?? true)
     setPeriod(budget?.period ?? 'cycle')
+    setOverspendPlan(budget?.overspendPlan ?? 'ask')
     setError('')
   }
 
@@ -368,7 +390,7 @@ function BudgetEditor({
     try {
       const target = mode === 'all' ? 'all' : mode === 'group' ? 'group' : categoryId
       await saveBudget(
-        { categoryId: target, categoryIds: groupIds, name: groupName, emoji: groupEmoji, amount: minor, rollover, period },
+        { categoryId: target, categoryIds: groupIds, name: groupName, emoji: groupEmoji, amount: minor, rollover, period, overspendPlan },
         budget?.id,
       )
       notify(budget ? 'Budget updated' : 'Budget created', 'success')
@@ -505,6 +527,17 @@ function BudgetEditor({
           label="Roll over unused budget"
           hint="Unspent money carries into the next period, capped at one limit."
         />
+
+        {period === 'cycle' ? (
+          <Field label="If this budget goes over" hint="Catch-up never takes more than half of this budget in one cycle; the rest moves to the next.">
+            <Select value={overspendPlan} onChange={(e) => setOverspendPlan(e.target.value as NonNullable<Budget['overspendPlan']>)}>
+              <option value="ask">Ask me each time</option>
+              <option value="next">Always take it from the next cycle</option>
+              <option value="spread3">Always spread it over 3 cycles</option>
+              <option value="waive">Always let it go</option>
+            </Select>
+          </Field>
+        ) : null}
 
         {error ? <p className="text-xs font-medium text-bad">{error}</p> : null}
       </div>

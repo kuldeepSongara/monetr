@@ -11,6 +11,8 @@ import type {
   FlagEntry,
   FlagIdea,
   Pot,
+  BudgetCarry,
+  CarryPlan,
   ImportRecord,
   Investment,
   InvestmentTransfer,
@@ -29,7 +31,7 @@ import { minorFactor, toBaseMinor, toMinor } from '../lib/money'
 import { downloadFile, median, normalizeMerchant, pickFile, safeJsonParse, uid } from '../lib/utils'
 import { predictBill } from '../lib/bills'
 
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export const DB_NAME = 'monetr'
 
@@ -53,6 +55,7 @@ class MonetrDB extends Dexie {
   imports!: Table<ImportRecord, string>
   tombstones!: Table<Tombstone, string>
   pots!: Table<Pot, string>
+  budgetCarries!: Table<BudgetCarry, string>
 
   constructor() {
     super(DB_NAME)
@@ -96,6 +99,15 @@ class MonetrDB extends Dexie {
           s.schemaVersion = 3
         })
       })
+    // v4: decisions about budgets that went over (catch-up in later cycles). Nothing to migrate:
+    // existing budgets and pots keep working and are read with sensible defaults.
+    this.version(4)
+      .stores({ budgetCarries: 'id, budgetId, cycleStart' })
+      .upgrade(async (tx) => {
+        await tx.table('settings').toCollection().modify((s: Settings) => {
+          s.schemaVersion = 4
+        })
+      })
   }
 }
 
@@ -116,6 +128,7 @@ export const SYNC_TABLES = [
   'flags',
   'flagIdeas',
   'pots',
+  'budgetCarries',
   'profiles',
 ] as const
 export type SyncTable = (typeof SYNC_TABLES)[number]
@@ -786,6 +799,7 @@ export interface BudgetInput {
   amount: number
   rollover: boolean
   period: Budget['period']
+  overspendPlan?: Budget['overspendPlan']
 }
 
 export async function saveBudget(input: BudgetInput, id?: string): Promise<void> {
@@ -798,6 +812,7 @@ export async function saveBudget(input: BudgetInput, id?: string): Promise<void>
       ? { categoryIds: [...new Set(input.categoryIds ?? [])], name: input.name?.trim() || undefined, emoji: input.emoji?.trim() || undefined }
       : {}),
     amount: Math.max(0, input.amount),
+    overspendPlan: input.overspendPlan ?? existing?.overspendPlan,
     rollover: input.rollover,
     period: input.period,
     archived: false,
@@ -807,8 +822,23 @@ export async function saveBudget(input: BudgetInput, id?: string): Promise<void>
 }
 
 export async function deleteBudget(id: string): Promise<void> {
+  const carries = (await db.budgetCarries.where('budgetId').equals(id).primaryKeys()) as string[]
+  if (carries.length) {
+    await recordDeletion('budgetCarries', carries)
+    await db.budgetCarries.bulkDelete(carries)
+  }
   await recordDeletion('budgets', [id])
   await db.budgets.delete(id)
+}
+
+/* ------------------------------ budget catch-up ----------------------------- */
+
+/** Record what to do about a budget that went over in a cycle (one decision per budget per cycle). */
+export async function decideOverspend(budgetId: string, cycleStart: ISODate, amount: number, plan: CarryPlan): Promise<void> {
+  const at = nowISO()
+  const id = `carry_${budgetId}_${cycleStart}`
+  const existing = await db.budgetCarries.get(id)
+  await db.budgetCarries.put({ id, budgetId, cycleStart, amount: Math.max(0, Math.round(amount)), plan, createdAt: existing?.createdAt ?? at, updatedAt: at })
 }
 
 /* ----------------------------------- pots ---------------------------------- */
@@ -958,6 +988,7 @@ const DATA_TABLES = [
   'flags',
   'flagIdeas',
   'pots',
+  'budgetCarries',
 ] as const
 type DataTable = (typeof DATA_TABLES)[number]
 
@@ -1064,7 +1095,7 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
   const factor = minorFactor(newCode) / minorFactor(oldCode)
   const at = nowISO()
 
-  const [txns, bills, payments, budgets, invTxs, currencyProfiles, pots] = await Promise.all([
+  const [txns, bills, payments, budgets, invTxs, currencyProfiles, pots, carries] = await Promise.all([
     db.transactions.toArray(),
     db.bills.toArray(),
     db.billPayments.toArray(),
@@ -1072,6 +1103,7 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
     db.investmentTxs.toArray(),
     db.currencyProfiles.toArray(),
     db.pots.toArray(),
+    db.budgetCarries.toArray(),
   ])
 
   // Anything already recorded in the new base currency is now 1:1.
@@ -1082,8 +1114,9 @@ export async function changeBaseCurrency(newCode: string): Promise<void> {
 
   await db.transaction(
     'rw',
-    [db.transactions, db.bills, db.billPayments, db.budgets, db.settings, db.investmentTxs, db.currencyProfiles, db.pots],
+    [db.transactions, db.bills, db.billPayments, db.budgets, db.settings, db.investmentTxs, db.currencyProfiles, db.pots, db.budgetCarries],
     async () => {
+      await db.budgetCarries.bulkPut(carries.map((c) => ({ ...c, amount: Math.round(c.amount * factor), updatedAt: at })))
       await db.pots.bulkPut(pots.map((p) => ({ ...p, target: Math.round(p.target * factor), perCycle: Math.round(p.perCycle * factor), updatedAt: at })))
       await db.transactions.bulkPut(txns.map((t) => ({ ...rebase(t), updatedAt: at })))
       await db.bills.bulkPut(bills.map((b) => ({ ...rebase(b), updatedAt: at })))

@@ -58,6 +58,7 @@ const SECTIONS: FeatureSection[] = [
     title: 'Home',
     items: [
       { icon: Wallet, title: 'Safe to spend', description: 'A daily number for the rest of your pay cycle, after budgets and the bills still due.' },
+      { icon: Bell, title: 'Reminders and nudges', description: 'Turn on per device. Bills the day before and on the day, a heads-up when a budget runs fast (say Shopping half gone in the first week) with a daily amount that keeps you on track, a Friday weekend allowance, and an evening summary. Worked out on your device.' },
       { icon: Bell, title: 'Alerts', description: 'Bills due or overdue, autopay amounts to confirm, spending spikes, duplicate-looking and unusually large charges.' },
       { icon: LineChart, title: 'Charts', description: '30-day trend vs 7-day average, category breakdown, budgets, upcoming bills and recent activity.' },
       { icon: SettingsIcon, title: 'Your layout', description: 'Show, hide and reorder dashboard widgets in Settings → Appearance. Pick how each chart is drawn — ranked bars, a share strip or a donut for categories; a line, daily bars or a running total for the trend — from the small switch in its corner.' },
@@ -96,7 +97,8 @@ const SECTIONS: FeatureSection[] = [
     title: 'Budgets',
     items: [
       { icon: Target, title: 'Per category or overall', description: 'Per pay cycle or per week, with optional one-cycle rollover.' },
-      { icon: PiggyBank, title: 'Savings pots', description: 'For one-time buys like a laptop or phone. Save up first, or — if you already bought it — pay it back over a few cycles. The purchase is paid from the pot, not one month’s budget; the pot’s per-cycle amount is held back from safe-to-spend. History and charts still show the real spend.' },
+      { icon: PiggyBank, title: 'Savings pots', description: 'For one-time buys like a laptop or phone. Save up first, or — if you already bought it — pay it back over a few cycles. The pot’s per-cycle amount comes out of the budget you choose (and so out of safe-to-spend); the purchase itself doesn’t hit one month’s budget. History and charts still show the real spend.' },
+      { icon: Target, title: 'Catching up after going over', description: 'When a budget ends a cycle over, Monetr asks what to do: take it from the next cycle, spread it over 3 (or 6) cycles, or let it go. Never more than half a budget comes out of one cycle. Set a default per budget if you don’t want to be asked.' },
       { icon: Users, title: 'Budget groups', description: 'Put several categories under one shared limit — e.g. Shopping + Dining as “Fun money”. The card shows how much each category used.' },
       { icon: Wallet, title: 'Allowance fallback', description: 'No budgets yet? A monthly allowance drives safe-to-spend instead.' },
     ],
