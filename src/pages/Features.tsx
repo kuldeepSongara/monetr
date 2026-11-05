@@ -66,7 +66,7 @@ const SECTIONS: FeatureSection[] = [
     icon: LayoutDashboard,
     title: 'Home',
     items: [
-      { icon: Wallet, title: 'Safe to spend today', description: 'What you can spend today and still finish the pay cycle on budget — after bills still due, savings pots and any catch-up. Under it, the whole cycle drawn day by day: how much each day cost, today, and the days a bill is due.' },
+      { icon: Wallet, title: 'Safe to spend today', description: 'What you can spend today and still finish the pay cycle on budget — after bills still due, savings pots and any catch-up. Under it, the whole cycle drawn day by day, with bills, rent and subscriptions in amber so everyday spending stands apart. Hover a day (or tap it on a phone) for the date, the total and what it went on. One line points out what changed against last month or which everyday day ran heaviest.' },
       { icon: History, title: 'Look back at earlier months', description: 'Step back with ‹ › to see how a finished month went — total, budget, biggest day, charts and what you spent on. “Add expense to October” dates the entry inside that month, for when you catch up on the 1st.' },
       { icon: BarChart3, title: 'Charts your way', description: 'Where it went: ranked bars, a share strip or a donut. Spending trend: a line with the 7-day average, daily bars, or a running total. Pick with the small switch in each card’s corner; it follows you to your other devices.' },
       { icon: AlertTriangle, title: 'Alerts', description: 'Budgets running fast or already over, bills due or overdue, autopay amounts to confirm, money to collect, possible double charges and unusual spending.' },

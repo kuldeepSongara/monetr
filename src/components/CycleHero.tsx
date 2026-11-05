@@ -1,15 +1,15 @@
 import { useMemo } from 'react'
 import { CircleDollarSign, Plus } from 'lucide-react'
 import { useApp } from '../store'
-import { spendDelta } from '../lib/analytics'
-import { addDays, daysBetween, formatDate, type Range } from '../lib/dates'
+import { cycleDays, cycleInsights, fixedTxnIds, type CycleDay } from '../lib/cycleDays'
+import { daysBetween, formatDate, shiftPeriod, type Range } from '../lib/dates'
+import { CycleStrip } from './CycleStrip'
 import { formatMoney } from '../lib/money'
 import { cn } from './ui'
 
 /**
  * The home screen's one bold object: today's safe-to-spend figure on a dark slip, with the whole
- * pay cycle drawn underneath — one bar per day, its height the money spent that day, today ringed,
- * days still to come as dots, and a mark on the days a bill is due.
+ * pay cycle drawn underneath (see CycleStrip) and one line that says something useful about it.
  */
 
 /** Large figure with the cents set smaller, so the whole amount reads first. */
@@ -40,33 +40,27 @@ export interface PastCycle {
 }
 
 export function CycleHero({ onAdd, past }: { onAdd: (type?: 'income') => void; past?: PastCycle }) {
-  const { safe, transactions, bills, schedules, settings, today: realToday, potList } = useApp()
+  const { safe, transactions, categories, bills, payments, schedules, subscriptions, settings, today: realToday, potList } = useApp()
   const currency = settings.currency
   const range = past?.range ?? safe.range
   // For a finished cycle every day is in the past; nothing is "today" and no bill is upcoming.
   const today = past ? range.end : realToday
 
-  const days = useMemo(() => {
-    const len = daysBetween(range.start, range.end) + 1
+  const { days, billDays, insights } = useMemo(() => {
     const potIds = new Set(potList.map((p) => p.pot.id))
-    const spent = new Array<number>(len).fill(0)
-    for (const t of transactions) {
-      if (t.date < range.start || t.date > range.end || (t.potId && potIds.has(t.potId))) continue
-      const i = daysBetween(range.start, t.date)
-      spent[i] += spendDelta(t)
-    }
-    const dueDays = new Set<number>()
+    const txns = transactions.filter((t) => !(t.potId && potIds.has(t.potId)))
+    const fixed = fixedTxnIds(txns, bills, payments, subscriptions)
+    const billDays = new Set<number>()
     for (const b of past ? [] : bills) {
       const due = schedules.get(b.id)?.nextDue
-      if (b.active && !b.archived && due && due >= range.start && due <= range.end) dueDays.add(daysBetween(range.start, due))
+      if (b.active && !b.archived && due && due >= range.start && due <= range.end) billDays.add(daysBetween(range.start, due))
     }
-    const todayIdx = daysBetween(range.start, today)
-    const max = Math.max(1, ...spent.slice(0, todayIdx + 1))
-    // Square root keeps one big day (rent) from flattening every other day.
-    return spent.map((v, i) => ({ i, date: addDays(range.start, i), spent: Math.max(0, v), h: Math.sqrt(Math.max(0, v) / max), past: i <= todayIdx, today: !past && i === todayIdx, bill: dueDays.has(i) }))
-  }, [transactions, bills, schedules, range, today, potList, past])
+    const insights = cycleInsights({ txns, categories, range, prevRange: shiftPeriod(range, -1, false), today: realToday, fixed, currency, finished: Boolean(past) })
+    return { days: cycleDays(txns, categories, range, fixed), billDays, insights }
+  }, [transactions, categories, bills, payments, subscriptions, schedules, range, realToday, potList, past, currency])
+  const todayIdx = Math.min(days.length - 1, daysBetween(range.start, today))
 
-  if (past) return <PastHero past={past} days={days} onAdd={onAdd} currency={currency} />
+  if (past) return <PastHero past={past} days={days} insights={insights} onAdd={onAdd} currency={currency} />
 
   const used = safe.limit ? Math.min(100, (safe.spent / safe.limit) * 100) : 0
   const none = safe.basis === 'none'
@@ -106,39 +100,9 @@ export function CycleHero({ onAdd, past }: { onAdd: (type?: 'income') => void; p
           </p>
         </>
       )}
+      <Insights lines={insights.slice(0, 1)} />
 
-      {/* The pay cycle, one mark per day */}
-      <div className="mt-6" aria-hidden>
-        <div className="flex h-14 items-end gap-[3px]">
-          {days.map((d) => (
-            <div key={d.i} className="relative flex h-full flex-1 flex-col items-center justify-end">
-              {d.bill ? <span className="absolute -top-0.5 h-1 w-1 rounded-full bg-[#E4AA48]" /> : null}
-              {d.past ? (
-                <span
-                  className={cn('w-full max-w-[10px] origin-bottom animate-tick rounded-[3px]', d.today ? 'bg-white' : d.spent ? 'bg-white/45' : 'bg-white/12')}
-                  style={{ height: `${Math.max(8, d.h * 100)}%`, animationDelay: `${Math.min(d.i, 40) * 14}ms` }}
-                  title={`${formatDate(d.date, 'short')}: ${formatMoney(d.spent, currency)}`}
-                />
-              ) : (
-                <span className="mb-0.5 h-1 w-1 rounded-full bg-white/25" />
-              )}
-              {d.today ? <span className="absolute -bottom-2.5 h-[3px] w-[3px] rounded-full bg-white" /> : null}
-            </div>
-          ))}
-        </div>
-        <div className="mt-4 flex items-center justify-between text-[11px] text-white/45">
-          <span>{formatDate(range.start, 'short')}</span>
-          <span className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-[#E4AA48]" /> bill due
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-white" /> today
-            </span>
-          </span>
-          <span>{formatDate(range.end, 'short')}</span>
-        </div>
-      </div>
+      <CycleStrip days={days} todayIdx={todayIdx} billDays={billDays} currency={currency} showToday />
 
       {!none ? (
         <div className="mt-5 border-t border-white/10 pt-4">
@@ -170,17 +134,27 @@ export function CycleHero({ onAdd, past }: { onAdd: (type?: 'income') => void; p
   )
 }
 
-type Day = { i: number; date: string; spent: number; h: number; past: boolean; today: boolean; bill: boolean }
+function Insights({ lines }: { lines: string[] }) {
+  if (!lines.length) return null
+  return (
+    <div className="mt-3 space-y-1">
+      {lines.map((l) => (
+        <p key={l} className="max-w-xl text-[13px] leading-relaxed text-white/80">
+          {l}
+        </p>
+      ))}
+    </div>
+  )
+}
 
 const SLIP = {
   background: 'radial-gradient(120% 90% at 100% 0%, #2A2F36 0%, #181B1F 45%, #111316 100%)',
   boxShadow: '0 1px 0 0 rgb(255 255 255 / 0.07) inset, 0 20px 40px -24px rgb(0 0 0 / 0.55)',
 }
 
-function PastHero({ past, days, onAdd, currency }: { past: PastCycle; days: Day[]; onAdd: (type?: 'income') => void; currency: string }) {
+function PastHero({ past, days, insights, onAdd, currency }: { past: PastCycle; days: CycleDay[]; insights: string[]; onAdd: (type?: 'income') => void; currency: string }) {
   const over = past.limit > 0 && past.spent > past.limit
   const used = past.limit ? Math.min(100, (past.spent / past.limit) * 100) : 0
-  const busiest = days.reduce((a, d) => (d.spent > a.spent ? d : a), days[0])
   return (
     <section aria-label={`How ${past.label} went`} className="relative w-full overflow-hidden rounded-[24px] p-5 text-[#ECEDEF] sm:p-6" style={SLIP}>
       <div className="flex items-start justify-between gap-3">
@@ -196,26 +170,10 @@ function PastHero({ past, days, onAdd, currency }: { past: PastCycle; days: Day[
             ? `That's ${formatMoney(past.spent - past.limit, currency)} over the ${formatMoney(past.limit, currency)} budget.`
             : `That's ${formatMoney(past.limit - past.spent, currency)} under the ${formatMoney(past.limit, currency)} budget.`
           : 'No budget was set for this cycle.'}
-        {busiest && busiest.spent > 0 ? ` Biggest day: ${formatDate(busiest.date, 'short')} (${formatMoney(busiest.spent, currency)}).` : ''}
       </p>
+      <Insights lines={insights} />
 
-      <div className="mt-6" aria-hidden>
-        <div className="flex h-14 items-end gap-[3px]">
-          {days.map((d) => (
-            <div key={d.i} className="relative flex h-full flex-1 flex-col items-center justify-end">
-              <span
-                className={cn('w-full max-w-[10px] origin-bottom animate-tick rounded-[3px]', d.spent ? 'bg-white/55' : 'bg-white/12')}
-                style={{ height: `${Math.max(8, d.h * 100)}%`, animationDelay: `${Math.min(d.i, 40) * 14}ms` }}
-                title={`${formatDate(d.date, 'short')}: ${formatMoney(d.spent, currency)}`}
-              />
-            </div>
-          ))}
-        </div>
-        <div className="mt-3 flex items-center justify-between text-[11px] text-white/45">
-          <span>{formatDate(past.range.start, 'short')}</span>
-          <span>{formatDate(past.range.end, 'short')}</span>
-        </div>
-      </div>
+      <CycleStrip days={days} todayIdx={days.length - 1} billDays={new Set()} currency={currency} showToday={false} />
 
       {past.limit ? (
         <div className="mt-5 border-t border-white/10 pt-4">
